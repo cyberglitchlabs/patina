@@ -1,0 +1,180 @@
+# Example Kubernetes manifests for Patina. Copy, adjust the marked values and
+# `kubectl apply -f`. Everything lives in the "patina" namespace.
+#
+# Notes
+#  * One replica only: Patina keeps the guide in SQLite on a PersistentVolume
+#    (or in Postgres, see the README) and runs a single scheduler.
+#  * The container runs as the non-root user 65532 with a read-only root
+#    filesystem; /data is the only writable path. `fsGroup` makes the volume
+#    writable for that user.
+#  * terminationGracePeriodSeconds is 90: after SIGTERM Patina finishes the
+#    guide window it is merging, which can take up to a 60 s provider request
+#    timeout plus the merge itself. A shorter grace period risks a SIGKILL.
+#  * The database URL (PATINA_DATABASE_URL) and listen address (PATINA_LISTEN)
+#    are set by the image and override the TOML file, so leave them out of
+#    the ConfigMap. To use Postgres, set PATINA_DATABASE_URL from a Secret.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: patina
+---
+# Non-secret configuration (providers, lineups, sources). Keys are documented
+# in config.example.toml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: patina-config
+  namespace: patina
+data:
+  patina.toml: |
+    timezone = "America/Chicago"
+    horizon_days = 7
+
+    [[providers]]
+    kind = "gracenote"
+    name = "gracenote"
+    daily_budget = 150
+
+    [[providers.lineups]]
+    name = "home"
+    lineup_id = "USA-IL12345-X"   # CHANGE: your Gracenote lineup id
+    postal_code = "60601"         # CHANGE: your postal code
+    country = "USA"
+
+    [[sources]]
+    kind = "hdhomerun"
+    url = "http://192.168.1.50"   # CHANGE: your tuner's address
+    lineups = ["home"]
+---
+# Tokens. An EMPTY or missing token means that endpoint is OPEN, so set both
+# before exposing the service beyond a trusted network. Create the Secret out
+# of band instead of committing values (this object is only a placeholder; delete
+# it if you create the Secret yourself):
+#
+#   kubectl -n patina create secret generic patina-secrets \
+#     --from-literal=PATINA_FEED_TOKEN="$(openssl rand -hex 24)" \
+#     --from-literal=PATINA_ADMIN_TOKEN="$(openssl rand -hex 24)"
+#
+# For Postgres instead of SQLite add (use sslmode=require for TLS):
+#   --from-literal=PATINA_DATABASE_URL='postgres://patina:password@db.example:5432/patina?sslmode=require'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: patina-secrets
+  namespace: patina
+type: Opaque
+stringData:
+  PATINA_FEED_TOKEN: ""
+  PATINA_ADMIN_TOKEN: ""
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: patina-data
+  namespace: patina
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+  # storageClassName: longhorn   # CHANGE if you do not want the default class
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: patina
+  namespace: patina
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # the SQLite volume is ReadWriteOnce: stop the old pod first
+  selector:
+    matchLabels:
+      app: patina
+  template:
+    metadata:
+      labels:
+        app: patina
+    spec:
+      terminationGracePeriodSeconds: 90
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: patina
+          # Pin a released version (and ideally its digest) in real use.
+          image: ghcr.io/cyberglitchlabs/patina:0.1.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PATINA_CONFIG
+              value: /etc/patina/patina.toml
+          # There is deliberately no /tmp emptyDir and no workingDir override:
+          # SQLite falls back to the working directory (/data) for temporary
+          # files, which is the writable volume.
+          envFrom:
+            - secretRef:
+                name: patina-secrets
+          ports:
+            - name: http
+              containerPort: 8080
+          # The image has no shell or curl. Plain HTTP probes on /healthz work:
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          # The binary's own check also works as an exec probe (this is what
+          # the Docker HEALTHCHECK runs):
+          livenessProbe:
+            exec:
+              command: ["/usr/local/bin/patina", "healthcheck"]
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /etc/patina
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: patina-data
+        - name: config
+          configMap:
+            name: patina-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: patina
+  namespace: patina
+spec:
+  selector:
+    app: patina
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

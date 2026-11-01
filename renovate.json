@@ -1,0 +1,40 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "docker:pinDigests",
+    "helpers:pinGitHubActionDigests",
+    ":semanticCommits"
+  ],
+  "enabledManagers": ["cargo", "dockerfile", "github-actions"],
+  "schedule": ["before 6am on monday"],
+  "timezone": "America/Chicago",
+  "automerge": false,
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on monday"]
+  },
+  "packageRules": [
+    {
+      "description": "Patina is a binary: Cargo.lock decides what ships, so keep the Cargo.toml requirements in step with it (bump) instead of leaving old minimums.",
+      "matchManagers": ["cargo"],
+      "rangeStrategy": "bump"
+    },
+    {
+      "description": "One PR for all minor and patch Rust crate updates. Majors stay separate so breaking changes are reviewed on their own.",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "rust crates (non-major)"
+    },
+    {
+      "description": "One PR for GitHub Actions updates (digest pins and version bumps).",
+      "matchManagers": ["github-actions"],
+      "groupName": "github actions"
+    },
+    {
+      "description": "Base image bumps (rust build image, distroless runtime image) in one PR.",
+      "matchManagers": ["dockerfile"],
+      "groupName": "container base images"
+    }
+  ]
+}

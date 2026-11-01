@@ -1,0 +1,20 @@
+# Keep the build context small and the build reproducible. Only what
+# `cargo build --release --locked` needs is sent to the builder:
+# Cargo.toml, Cargo.lock, build.rs, src/ and migrations/.
+target/
+.git/
+.github/
+.superpowers/
+docs/
+tests/
+*.md
+LICENSE-*
+config.example.toml
+# rust-toolchain.toml would make rustup in the build image try to download a
+# toolchain; the Dockerfile pins the Rust version through the base image.
+rust-toolchain.toml
+Dockerfile
+.dockerignore
+install.sh*
+*.db
+*.db-*

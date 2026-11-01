@@ -1,0 +1,52 @@
+[package]
+name = "patina"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Guide and EPG aggregator that serves XMLTV feeds to Jellyfin"
+publish = false
+repository = "https://github.com/cyberglitchlabs/patina"
+homepage = "https://github.com/cyberglitchlabs/patina"
+
+[dependencies]
+anyhow = "1.0.104"
+async-trait = "0.1.92"
+axum = "0.8.9"
+bytes = "1.12.1"
+chrono = { version = "0.4.45", features = ["serde"] }
+chrono-tz = { version = "0.10.4", features = ["serde"] }
+fastrand = "2.5.0"
+flate2 = "1.1.10"
+prometheus = { version = "0.14.0", default-features = false }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "query", "json"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "sqlite", "postgres", "migrate", "macros"] }
+subtle = "2.6.1"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = "0.7.20"
+toml = "1.1.8"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
+url = "2.5.8"
+
+[dev-dependencies]
+http-body-util = "0.1.5"
+proptest = "1.12.0"
+roxmltree = "0.21.2"
+tempfile = "3.27.0"
+tower = { version = "0.5.3", features = ["util"] }
+
+# Compile dependencies (sqlx, flate2, serde_json, ...) with optimizations even
+# in dev/test builds; our own code stays unoptimized for fast rebuilds. The
+# end-to-end tests gzip and parse hundreds of real 400 KB provider responses,
+# which takes about twice as long with unoptimized dependencies.
+[profile.dev.package."*"]
+opt-level = 2
+
+# Release (container) builds: strip symbols to shrink the binary. No LTO: it
+# would make the emulated arm64 CI build much slower for little gain.
+[profile.release]
+strip = "symbols"

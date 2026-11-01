@@ -1,0 +1,149 @@
+name: CI
+
+# Run on pushes to main and on pull requests only. Without the branch filter a
+# push to a PR branch would start two identical runs (one for the push, one
+# for the pull_request).
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# New pushes to a PR cancel the older run for the same PR; runs on main are
+# never cancelled (each one has a unique ref+sha group so they all finish).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Least privilege: CI only needs to read the repository.
+permissions:
+  contents: read
+
+# Offline only: no job here contacts a real provider.
+# Every cargo command uses --locked so CI fails if Cargo.lock is out of date
+# instead of silently resolving newer dependencies.
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: rustfmt
+      - run: cargo fmt --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo clippy --locked --all-targets -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # A real PostgreSQL server for the Postgres store contract tests.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PATINA_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
+      # Makes the Postgres tests fail (not silently skip) if the server is missing.
+      PATINA_REQUIRE_POSTGRES: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo test --locked
+
+  # Supply-chain checks: licenses, banned/duplicate crates, allowed sources
+  # and RustSec advisories, configured in deny.toml.
+  deny:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+          arguments: --locked
+
+  # cargo-audit scans Cargo.lock against the RustSec advisory database. It
+  # overlaps `cargo deny check advisories` on purpose: the two tools read the
+  # database slightly differently, and this one is the reference scanner.
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+        with:
+          tool: cargo-audit
+      - run: cargo audit --deny warnings
+
+  # Build the container image on pull requests WITHOUT pushing it, to catch
+  # Dockerfile breakage before release. Then run it the way production does:
+  # read-only root filesystem, only /data writable, non-root user.
+  docker-smoke:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: false
+          load: true # make the image available to `docker run` below
+          tags: patina:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Run the image and wait for it to become healthy
+        run: |
+          set -eu
+          docker run --rm patina:ci --version
+          # A named volume is created owned by the image's nonroot user.
+          docker run -d --name patina --read-only -v patina-data:/data patina:ci
+          for i in $(seq 1 30); do
+            if docker exec patina /usr/local/bin/patina healthcheck; then
+              echo "healthy after ${i}s"
+              docker stop patina
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs patina
+          exit 1

@@ -1,0 +1,61 @@
+# cargo-deny configuration (format of cargo-deny 0.20; see
+# https://embarkstudios.github.io/cargo-deny/). Run with `cargo deny check`.
+# CI runs it on every pull request; Renovate dependency bumps are therefore
+# checked for license, advisory and source problems automatically.
+
+[graph]
+# Check the dependency graph for the platforms we ship (the container image)
+# plus the developer platform, instead of every target some crate mentions
+# (that would drag in Windows-only crates and their licenses).
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+]
+
+[advisories]
+# Known vulnerabilities (RustSec database) fail the check. Unmaintained and
+# unsound crates fail too when they are direct or transitive deps of ours.
+unmaintained = "all"
+# A yanked crate version means its author withdrew it, usually for a bug.
+yanked = "deny"
+# Add RUSTSEC ids here (with a reason) only for advisories that cannot affect
+# us and cannot be fixed yet. Currently none.
+ignore = []
+
+[licenses]
+# Licenses a dependency may use. An expression like "MIT OR Apache-2.0" passes
+# if ANY alternative is allowed. Each entry below is needed by something in
+# the current tree. (Add BSD-2-Clause, MPL-2.0, etc. here if a future dependency
+# needs them; unused entries only produce warnings.)
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-3-Clause",       # matchit, subtle
+    "ISC",                # ring, rustls, rustls-webpki, untrusted
+    "Unicode-3.0",        # icu_* / unicode-* data tables (url -> idna)
+    "Zlib",               # foldhash, miniz_oxide, tinyvec (OR alternatives)
+    "CDLA-Permissive-2.0", # webpki-roots: bundled Mozilla CA certificate data
+]
+# Confidence needed to recognise a license text found in a crate's files.
+confidence-threshold = 0.9
+
+[licenses.private]
+# patina itself is `publish = false`; do not require a license for it.
+ignore = true
+
+[bans]
+# Two versions of one crate usually means a slow, bigger build, not a defect;
+# warn so it is visible in review without failing.
+multiple-versions = "warn"
+wildcards = "deny"
+# Our own path/dev dependencies may use "*"; none do. Keep the check on.
+allow-wildcard-paths = true
+
+[sources]
+# Only crates.io. No other registries and no git dependencies: a git
+# dependency has no checksum in the registry and bypasses yank/advisory data.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

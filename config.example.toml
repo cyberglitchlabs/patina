@@ -1,0 +1,91 @@
+# Patina example configuration. Point PATINA_CONFIG at this file.
+# Every key is optional. Environment variables (PATINA_<NAME>) override the
+# matching key here; the variable name is shown next to each setting.
+
+# Address and port to serve on.                         (PATINA_LISTEN)
+listen = "0.0.0.0:8080"
+
+# Log filter: "info", "debug", or "patina=debug,info".  (PATINA_LOG)
+log = "info"
+
+# SQLite (default) or PostgreSQL.                       (PATINA_DATABASE_URL)
+# database_url = "postgres://patina:password@db:5432/patina"
+database_url = "sqlite://patina.db?mode=rwc"
+
+# IANA timezone used for XMLTV output offsets.          (PATINA_TIMEZONE)
+timezone = "America/Chicago"
+
+# If set, XMLTV feed URLs require this token.           (PATINA_FEED_TOKEN)
+# feed_token = "change-me"
+
+# If set, /status and /metrics require
+# "Authorization: Bearer <token>".                      (PATINA_ADMIN_TOKEN)
+# admin_token = "change-me-too"
+
+# How many days ahead to keep the guide filled (1 to 14).  (PATINA_HORIZON_DAYS)
+horizon_days = 7
+
+# Soft limit on stored data; oldest data is evicted first.
+# Omit for no limit.                                    (PATINA_DISK_CAP_BYTES)
+# disk_cap_bytes = 2147483648
+
+# How long to keep data, in days (each >= 1).
+[retention]
+images_days = 3        # after the last programme using the image airs  (PATINA_RETENTION_IMAGES_DAYS)
+raw_days = 7           # raw provider responses                         (PATINA_RETENTION_RAW_DAYS)
+programmes_days = 7    # aired programmes, after they end               (PATINA_RETENTION_PROGRAMMES_DAYS)
+history_days = 90      # score and metrics history                      (PATINA_RETENTION_HISTORY_DAYS)
+
+# Guide providers. Repeat [[providers]] for more than one.
+[[providers]]
+kind = "gracenote"
+name = "gracenote"
+daily_budget = 150     # hard cap on requests per day (>= 1)
+# base_url = "https://tvlistings.gracenote.com/"   # default; override only for testing
+
+# Lineups for this provider. Sources refer to them by `name`.
+[[providers.lineups]]
+name = "home"
+lineup_id = "USA-IL12345-X"
+postal_code = "60601"
+country = "USA"
+
+# Channel sources. Repeat [[sources]] for more than one.
+# Each source gets a feed at /xmltv/<name>.xml. Sources have no name key; the
+# name is the kind plus its 1-based position among sources of that kind:
+# the first hdhomerun source is "hdhomerun-1", the second "hdhomerun-2", the
+# first static source "static-1". /xmltv/all.xml combines every source (a
+# station carried by two sources appears once). If feed_token is set, add
+# ?token=<token> or use /t/<token>/xmltv/<name>.xml instead.
+[[sources]]
+kind = "hdhomerun"
+url = "http://192.168.1.50"   # the tuner's address
+lineups = ["home"]            # names from providers.lineups
+# overrides_path = "overrides.toml"   # manual channel match fixes
+# Override file format: repeated [[override]] tables, each with exactly one
+# selector (number = "5.6", or name = "FOX 9") and exactly one action
+# (provider_channel_id = "...", canonical = "ID.us", or ignore = true).
+# A `name` selector is an exact match on the tuner's channel name, ignoring
+# case and surrounding spaces ("FOX 9" does not match "FOX 9+"). It applies to
+# EVERY tuner channel with that name (e.g. all seven "KWJM-LD" entries). If a
+# name and a number entry both match one channel, the earlier entry wins.
+include_unmatched = false     # keep channels that match no lineup
+
+# A hand-written channel list instead of a tuner:
+# [[sources]]
+# kind = "static"
+# lineups = ["home"]
+# [[sources.channels]]
+# number = "99.1"             # required
+# name = "My Channel"         # required
+# callsign = "MYCH"           # optional
+
+# Quality score weights (each >= 0, not all zero). They need not sum to 1.
+[scoring]
+freshness = 0.25
+completeness = 0.2
+timeline_sanity = 0.2
+stability = 0.15
+reliability = 0.15
+hindsight_accuracy = 0.05
+agreement = 0.0

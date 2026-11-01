@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tv generator-info-name="patina">
+  <channel id="WCCODT.us">
+    <display-name>4.1 WCCO-DT</display-name>
+  </channel>
+  <channel id="KAREDT.us">
+    <display-name>11.1 KARE-HD</display-name>
+  </channel>
+  <channel id="EMPTY.us">
+    <display-name>99.1 No Data</display-name>
+  </channel>
+  <programme start="20261031170000 -0500" stop="20261031180000 -0500" channel="WCCODT.us">
+    <title lang="en">CBS Evening News</title>
+    <sub-title lang="en">Saturday</sub-title>
+    <desc lang="en">The day&apos;s news &amp; weather.</desc>
+    <category lang="en">News</category>
+    <category lang="en">Weather</category>
+    <icon src="https://img.example/a.jpg?w=1&amp;h=2"/>
+    <episode-num system="xmltv_ns">1.4.</episode-num>
+    <episode-num system="onscreen">S02E05</episode-num>
+    <rating><value>TV-G</value></rating>
+  </programme>
+  <programme start="20261031180000 -0500" stop="20261031193000 -0500" channel="WCCODT.us">
+    <title lang="en">Late Show</title>
+  </programme>
+  <programme start="20261031170000 -0500" stop="20261031173000 -0500" channel="KAREDT.us">
+    <title lang="en">Local News</title>
+  </programme>
+</tv>

@@ -1,0 +1,102 @@
+name: Publish edge image
+
+# Every push to main builds the image and publishes it to GHCR as
+#   ghcr.io/cyberglitchlabs/patina:edge        (moves with every push)
+#   ghcr.io/cyberglitchlabs/patina:sha-<short> (one specific commit)
+# Official releases (X.Y.Z, latest) are built by release.yml, not here.
+#
+# Safety: this runs ONLY on pushes to main (or a manual run by someone with
+# write access). There is no pull_request trigger, so code from a fork or an
+# unmerged PR can never reach the publish step.
+on:
+  push:
+    branches: [main]
+  # Lets a maintainer re-run the build by hand from the Actions tab.
+  workflow_dispatch:
+
+# Own group, so this can never cancel (or be cancelled by) CI or Release.
+# A newer push supersedes an older build: edge images are disposable.
+concurrency:
+  group: publish-edge
+  cancel-in-progress: true
+
+# Nothing by default; the job below asks for exactly what it needs.
+permissions: {}
+
+jobs:
+  publish-edge:
+    # Do not run on forks: they have no right to publish this image.
+    if: github.repository == 'cyberglitchlabs/patina'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read # check out the code
+      packages: write # push the image to ghcr.io
+      id-token: write # keyless signing of the attestation (OIDC)
+      attestations: write # store the attestation
+      artifact-metadata: write # storage record that actions/attest creates
+    env:
+      IMAGE: ghcr.io/cyberglitchlabs/patina
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Do not leave the token in .git/config where later steps could
+          # read it; this job never pushes to the repository.
+          persist-credentials: false
+
+      # No QEMU step: automatic builds are linux/amd64 only (the cluster
+      # that runs them is x86), so the native runner builds directly, which
+      # is much faster and cheaper than emulating arm64. Releases
+      # (release.yml) stay multi-arch.
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # GITHUB_TOKEN is created per run and expires with it; it is the only
+      # credential used here.
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Computes the tags: `edge` and `sha-<7 char commit>`. As in
+      # release.yml, metadata-action's own labels are NOT passed to the
+      # build: they would override the licenses label set in the Dockerfile.
+      # The OCI labels (source, version, revision) come from the build args
+      # below; org.opencontainers.image.source is what makes GHCR link the
+      # package to this repository.
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=edge
+            type=sha,format=short
+
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          # Same build args as release.yml (the Dockerfile has no "created"
+          # arg, so none is passed).
+          build-args: |
+            VERSION=edge
+            REVISION=${{ github.sha }}
+            SOURCE=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # BuildKit attaches an SBOM and a max-detail provenance record to
+          # the image.
+          sbom: true
+          provenance: mode=max
+
+      # Signed GitHub build-provenance attestation for the image digest,
+      # pushed to the registry next to the image. Attested by digest, so it
+      # stays valid for whichever tag points at it later.
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
