@@ -243,7 +243,7 @@ async fn feed_returns_matched_channels_even_without_programmes() {
         .filter(|n| n.has_tag_name("display-name"))
         .map(|n| n.text().unwrap().to_string())
         .collect();
-    assert_eq!(names, ["4.1 WCCO-DT", "11.1 KARE 11"]);
+    assert_eq!(names, ["4.1 WCCO-DT", "4.1", "11.1 KARE 11", "11.1"]);
     assert!(programme_titles(&xml).is_empty());
 }
 
@@ -303,7 +303,17 @@ async fn include_unmatched_adds_empty_channels() {
         .filter(|n| n.has_tag_name("display-name"))
         .map(|n| n.text().unwrap().to_string())
         .collect();
-    assert_eq!(names, ["99.1 Nowhere", "4.1 WCCO-DT", "8.8 Mystery"]);
+    assert_eq!(
+        names,
+        [
+            "99.1 Nowhere",
+            "99.1",
+            "4.1 WCCO-DT",
+            "4.1",
+            "8.8 Mystery",
+            "8.8"
+        ]
+    );
     // Only the matched channel has a programme.
     assert_eq!(programme_titles(&xml), ["News"]);
     let p = doc(&xml)

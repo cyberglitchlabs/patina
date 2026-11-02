@@ -17,7 +17,10 @@ use crate::model::{CanonicalChannel, MasterSlot};
 /// Render a complete XMLTV document.
 ///
 /// * `channels` are written first, in the given order; the XMLTV `id` is the
-///   canonical id and the display name is `"<number> <name>"`.
+///   canonical id and the display names are `"<number> <name>"` followed by
+///   the bare `"<number>"`. The bare number matters: Jellyfin only learns a
+///   channel's number from a purely numeric display name, and matches tuner
+///   channels to the guide by that number (or by exact name).
 /// * programmes follow, grouped in the order of `channels` and sorted by
 ///   start time within a channel. Slots whose channel is not in `channels`
 ///   are skipped, as are slots whose times XMLTV cannot express (a year
@@ -32,9 +35,10 @@ pub fn render(channels: &[CanonicalChannel], slots: &[MasterSlot], tz: Tz) -> St
     for c in channels {
         let _ = writeln!(
             out,
-            "  <channel id=\"{}\">\n    <display-name>{}</display-name>\n  </channel>",
+            "  <channel id=\"{}\">\n    <display-name>{}</display-name>\n    <display-name>{}</display-name>\n  </channel>",
             esc(&c.id.0, true),
             esc(&format!("{} {}", c.number, c.name), false),
+            esc(&c.number, false),
         );
     }
 

@@ -514,3 +514,31 @@ fn programmes_are_grouped_by_channel_then_start() {
     // Slots for a channel that is not in the feed are not rendered.
     assert_eq!(titles, ["b1", "b2", "a1", "a2"]);
 }
+
+/// Jellyfin learns a channel's number only from a purely numeric
+/// `<display-name>` and matches tuner channels to the guide by it, so every
+/// channel must carry its bare number as an extra display name.
+#[test]
+fn every_channel_has_a_bare_numeric_display_name() {
+    let xml = render(
+        &[
+            chan("A.us", "4.1", "WCCO-DT"),
+            chan("B.us", "11.1", "KARE 11"),
+        ],
+        &[],
+        Chicago,
+    );
+    let doc = parse(&xml);
+    for ch in doc.descendants().filter(|n| n.has_tag_name("channel")) {
+        let names: Vec<_> = ch
+            .children()
+            .filter(|n| n.has_tag_name("display-name"))
+            .map(|n| n.text().unwrap().to_string())
+            .collect();
+        assert!(names.len() >= 2, "{names:?}");
+        assert!(
+            names.iter().any(|n| n.parse::<f64>().is_ok()),
+            "no numeric display name in {names:?}"
+        );
+    }
+}

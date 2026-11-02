@@ -2,12 +2,15 @@
 <tv generator-info-name="patina">
   <channel id="WCCODT.us">
     <display-name>4.1 WCCO-DT</display-name>
+    <display-name>4.1</display-name>
   </channel>
   <channel id="KAREDT.us">
     <display-name>11.1 KARE-HD</display-name>
+    <display-name>11.1</display-name>
   </channel>
   <channel id="EMPTY.us">
     <display-name>99.1 No Data</display-name>
+    <display-name>99.1</display-name>
   </channel>
   <programme start="20261031170000 -0500" stop="20261031180000 -0500" channel="WCCODT.us">
     <title lang="en">CBS Evening News</title>
