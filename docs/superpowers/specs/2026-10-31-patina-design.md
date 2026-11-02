@@ -212,7 +212,7 @@ M3U sources; Schedules Direct; learned scoring.
   request but works from their tools; expect header/User-Agent sensitivity.
 - Gracenote sometimes returns 400 for particular time windows; this must be
   tolerated, not fatal.
-- Thumbnails map to `https://zap2it.tmsimg.com/assets/<thumbnail>.jpg`.
+- Thumbnails map to `https://zpmc.tmsimg.com/assets/<thumbnail>.jpg`.
 - The tuner (HDHomeRun EXTEND, HDTC-2US) lists 107 entries including
   duplicates and an `Unknown` entry at 5000, and many low-power stations with
   generic names; some of these may have no provider data. Gracenote also has

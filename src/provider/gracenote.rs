@@ -21,7 +21,7 @@ pub const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Ap
     (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
 /// The real Gracenote listings site (used unless the config overrides it).
 pub const DEFAULT_BASE_URL: &str = "https://tvlistings.gracenote.com/";
-const IMAGE_PREFIX: &str = "https://zap2it.tmsimg.com/assets/";
+const IMAGE_PREFIX: &str = "https://zpmc.tmsimg.com/assets/";
 const MAX_TITLE_CHARS: usize = 500;
 const MAX_DESC_CHARS: usize = 4000;
 

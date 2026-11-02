@@ -83,10 +83,7 @@ fn every_observation_has_image_url_with_tmsimg_prefix() {
     let w = provider().parse(&lineup(), &raw_fixture(), fetched_at());
     for o in &w.observations {
         let url = o.image_url.as_deref().expect("image_url present");
-        assert!(
-            url.starts_with("https://zap2it.tmsimg.com/assets/"),
-            "{url}"
-        );
+        assert!(url.starts_with("https://zpmc.tmsimg.com/assets/"), "{url}");
         assert!(url.ends_with(".jpg"), "{url}");
     }
 }
@@ -112,7 +109,7 @@ fn thumbnail_is_used_as_is_only_with_an_http_scheme() {
     for t in ["httpx://evil/p", "javascript:alert(1)", "httpfoo"] {
         let url = thumb(t);
         assert!(
-            url.starts_with("https://zap2it.tmsimg.com/assets/"),
+            url.starts_with("https://zpmc.tmsimg.com/assets/"),
             "{t}: {url}"
         );
     }
