@@ -26,6 +26,9 @@ pub struct FailingStore {
     pub fail_apply_channel: Mutex<Option<ChannelId>>,
     /// How many `apply_merge` calls were made to fail.
     pub apply_failures: AtomicUsize,
+    /// `upsert_channels` fails while this is set (the canonical channels of a
+    /// response cannot be stored).
+    pub fail_channel_storage: AtomicBool,
     /// `window_state_get` fails while this is set.
     pub fail_window_state_get: AtomicBool,
     /// `bad_window_is_bad` (one of the fetch layer's gates before a request)
@@ -57,6 +60,7 @@ impl FailingStore {
             inner,
             fail_apply_channel: Mutex::new(None),
             apply_failures: AtomicUsize::new(0),
+            fail_channel_storage: AtomicBool::new(false),
             fail_window_state_get: AtomicBool::new(false),
             fail_bad_window_check: AtomicBool::new(false),
             fail_stats: AtomicBool::new(false),
@@ -115,6 +119,9 @@ impl Store for FailingStore {
     }
 
     async fn upsert_channels(&self, channels: &[CanonicalChannel]) -> Result<()> {
+        if self.fail_channel_storage.load(Ordering::SeqCst) {
+            anyhow::bail!("injected upsert_channels failure");
+        }
         self.inner.upsert_channels(channels).await
     }
 

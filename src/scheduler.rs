@@ -31,8 +31,8 @@
 //! **One window, step by step.** For every due window, nearest first:
 //! skip it if its lineup is in a bad-window hold; ask the fetch layer;
 //! sort the outcome (`ledger::classify`); hand a usable answer to
-//! `Scheduler::ingest` (channels, quality check, then `ingest::Ingest` per
-//! listed channel); ask the window ledger what it all means
+//! `ingest::WindowIngest` (channels, timeline check, then a merge per listed
+//! channel); record the quality check; ask the window ledger what it all means
 //! (`ledger::decide`); then apply that decision: provider reliability,
 //! window state, tick counters, the lineup's streak and hold, and logs. All
 //! the RULES live in `ledger` (pure, table-tested); this module only does
@@ -43,13 +43,12 @@
 //! detect that the data changed since a plan was computed, so the steps
 //! load -> plan -> apply for a channel (all inside `Ingest::channel`) must
 //! never interleave with another plan for the same channel. Doing everything
-//! sequentially guarantees it.
+//! sequentially guarantees it, and `WindowIngest::window` takes `&mut self`.
 //!
-//! **Hindsight samples** come back from `Ingest::channel` only after the
-//! channel's merge was stored. They are folded into the in-memory averages
-//! at once and written in one batch at the end of the tick.
+//! **Hindsight accuracy** is `WindowIngest`'s business: it is collected as
+//! merges are stored and written in one batch when the tick finishes.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -60,17 +59,14 @@ use tokio_util::sync::CancellationToken;
 use crate::clock::Clock;
 use crate::config::{LineupCfg, MAX_HORIZON_DAYS, Weights};
 use crate::fetch::FetchLayer;
-use crate::ingest::{ChannelResponse, Ingest, store_channels};
+use crate::ingest::WindowIngest;
 use crate::ledger::{
     self, Attempt, Classified, Decision, LineupRun, Reliability, SavedWindow, Tally, WindowWrite,
 };
 use crate::metrics::Metrics;
-use crate::model::{ChannelId, Observation, ProviderId};
-use crate::provider::ParsedWindow;
-use crate::score::{
-    AccuracySnapshot, TimelineReport, WeightedScorer, next_accuracy_row, timeline_integrity,
-};
-use crate::store::{AccuracyRow, Store, WindowState};
+use crate::model::ProviderId;
+use crate::score::TimelineReport;
+use crate::store::{Store, WindowState};
 
 /// Length of one fetch window (the only `timespan` proven to work).
 pub const WINDOW: TimeDelta = TimeDelta::hours(6);
@@ -311,18 +307,6 @@ pub fn horizon_windows(now: DateTime<Utc>, horizon_days: u32) -> Vec<DateTime<Ut
     out
 }
 
-/// Per-tick scratch space shared by all windows of the tick.
-struct TickCtx {
-    /// Built once per tick over the accuracy/reliability snapshot loaded at
-    /// the start of the tick (not per slot or per channel).
-    scorer: WeightedScorer,
-    /// Hindsight averages, updated in memory during the tick and written in
-    /// one batch at the end (`dirty` says which).
-    accuracy: BTreeMap<(ProviderId, ChannelId), AccuracyRow>,
-    dirty: BTreeSet<(ProviderId, ChannelId)>,
-    channels_seen: BTreeSet<ChannelId>,
-}
-
 impl Scheduler {
     pub fn new(deps: SchedulerDeps, clock: Arc<dyn Clock>) -> Self {
         Scheduler {
@@ -390,34 +374,14 @@ impl Scheduler {
         let mut report = TickReport::default();
         let now = self.clock.now();
 
-        // Scoring inputs, loaded once per tick. If they cannot be read the
-        // scorer uses neutral values; merging still works.
-        let acc_rows = self
-            .store
-            .provider_accuracy_load_all()
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %format!("{e:#}"), "cannot load accuracy; using neutral values");
-                Vec::new()
-            });
-        let rel_rows = self
-            .store
-            .provider_reliability_load_all()
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %format!("{e:#}"), "cannot load reliability; using neutral values");
-                Vec::new()
-            });
-        let snapshot = AccuracySnapshot::from_rows(&acc_rows, &rel_rows);
-        let mut ctx = TickCtx {
-            scorer: WeightedScorer::new(self.weights.clone(), Arc::new(snapshot)),
-            accuracy: acc_rows
-                .into_iter()
-                .map(|r| ((r.provider.clone(), r.channel.clone()), r))
-                .collect(),
-            dirty: BTreeSet::new(),
-            channels_seen: BTreeSet::new(),
-        };
+        // Window ingest: scoring inputs are loaded once per tick, and the
+        // hindsight bookkeeping is written once at the end.
+        let mut ingest = WindowIngest::begin(
+            self.store.clone(),
+            &self.weights,
+            self.feed_generation.clone(),
+        )
+        .await;
 
         // Which windows are due, for every provider lineup.
         let due = self.due_windows(now).await;
@@ -450,9 +414,17 @@ impl Scheduler {
                         // when it was fetched, and would be counted again.
                         m.dropped(&parsed.dropped);
                     }
-                    let (integrity, stored) = self
-                        .ingest(p, lineup, w, &parsed, now, &mut ctx, &mut report)
+                    let done = ingest
+                        .window(&p.id, &lineup.name, w..w + WINDOW, &parsed, now)
                         .await;
+                    report.slots_inserted += done.stats.inserted;
+                    report.slots_updated += done.stats.updated;
+                    report.slots_removed += done.stats.removed;
+                    report.merge_errors += done.merge_errors;
+                    if let Some(integrity) = done.integrity {
+                        self.record_quality(p, lineup, w, now, integrity, &mut report);
+                    }
+                    let (integrity, stored) = (done.integrity, done.stored);
                     Attempt::Answered {
                         fresh,
                         integrity,
@@ -464,15 +436,7 @@ impl Scheduler {
             self.apply(p, lineup, w, now, decision, &mut report).await;
         }
 
-        // Batched hindsight-accuracy writes (one per provider and channel).
-        for key in &ctx.dirty {
-            if let Some(row) = ctx.accuracy.get(key)
-                && let Err(e) = self.store.provider_accuracy_upsert(row).await
-            {
-                tracing::warn!(provider = %key.0.0, channel = %key.1.0, error = %format!("{e:#}"), "cannot store hindsight accuracy");
-            }
-        }
-        report.channels_seen = ctx.channels_seen.len();
+        report.channels_seen = ingest.finish().await;
         *self.status.last_tick.lock().unwrap() = Some((self.clock.now(), report.clone()));
         report
     }
@@ -569,39 +533,18 @@ impl Scheduler {
         due
     }
 
-    /// Store one clean response. Returns the response's gap/overlap check
-    /// (`None` if storing failed before it was reached) and whether
-    /// everything was stored. What either means for reliability and the
-    /// window's state is the ledger's call (`ledger::decide`).
-    #[allow(clippy::too_many_arguments)]
-    async fn ingest(
+    /// Remember the response's gap/overlap check for `/status`. Gaps or
+    /// overlaps beyond the limits count against the provider's reliability
+    /// (the ledger records that); the data is merged either way.
+    fn record_quality(
         &self,
         p: &ProviderRef,
         lineup: &LineupCfg,
         window_start: DateTime<Utc>,
-        parsed: &ParsedWindow,
         now: DateTime<Utc>,
-        ctx: &mut TickCtx,
+        integrity: TimelineReport,
         report: &mut TickReport,
-    ) -> (Option<TimelineReport>, bool) {
-        let store = self.store.as_ref();
-
-        // (1) Channels: the provider's own list (for matching and overrides)
-        // and the canonical channels that slots refer to.
-        let listed = match store_channels(store, &p.id, &lineup.name, &parsed.channels, now).await {
-            Ok(listed) => listed,
-            Err(e) => {
-                tracing::warn!(provider = %p.id.0, error = %format!("{e:#}"), "cannot store channels");
-                return (None, false);
-            }
-        };
-
-        // (2) Response quality, once per response. Gaps or overlaps beyond
-        // the limits count against the provider's reliability (the ledger
-        // records that), but the data is still merged: holes are not
-        // contradictions, and the merge never lets a response make the
-        // guide worse.
-        let integrity = timeline_integrity(&parsed.observations);
+    ) {
         let acceptable = ledger::acceptable(&integrity);
         tracing::debug!(provider = %p.id.0, lineup = %lineup.name, window = %window_start, ?integrity, acceptable, "response timeline check");
         self.status.quality.lock().unwrap().insert(
@@ -615,48 +558,6 @@ impl Scheduler {
             },
         );
         report.last_integrity = Some(integrity);
-
-        // (3) Merge, channel by channel, one after the other (module docs).
-        // Only channels this response lists are ingested: channels seen in
-        // earlier responses but absent from this one get no coverage.
-        let mut by_channel: BTreeMap<ChannelId, Vec<Observation>> = BTreeMap::new();
-        for o in &parsed.observations {
-            by_channel
-                .entry(o.channel.clone())
-                .or_default()
-                .push(o.clone());
-        }
-        let mut all_ok = true;
-        for channel in listed {
-            ctx.channels_seen.insert(channel.clone());
-            let incoming = by_channel.remove(&channel).unwrap_or_default();
-            let guide = Ingest {
-                store,
-                scorer: &ctx.scorer,
-                feed_generation: self.feed_generation.as_deref(),
-            };
-            let response = ChannelResponse {
-                provider: &p.id,
-                channel: &channel,
-                window: window_start..window_start + WINDOW,
-                observations: &incoming,
-            };
-            match guide.channel(response, now).await {
-                Ok(done) => {
-                    // The merge is stored: now the hindsight samples count.
-                    commit_samples(ctx, &p.id, &channel, &done.samples, now);
-                    report.slots_inserted += done.stats.inserted;
-                    report.slots_updated += done.stats.updated;
-                    report.slots_removed += done.stats.removed;
-                }
-                Err(e) => {
-                    tracing::warn!(provider = %p.id.0, channel = %channel.0, error = %format!("{e:#}"), "merge failed; master unchanged for this channel");
-                    report.merge_errors += 1;
-                    all_ok = false;
-                }
-            }
-        }
-        (Some(integrity), all_ok)
     }
 
     async fn record_reliability(&self, provider: &ProviderId, success: bool, at: DateTime<Utc>) {
@@ -711,24 +612,5 @@ impl Scheduler {
         {
             tracing::warn!(provider = %provider.0, error = %format!("{e:#}"), "cannot save window state");
         }
-    }
-}
-
-/// Fold one channel's hindsight samples into the in-memory averages (written
-/// to the store in one batch at the end of the tick). Called only with the
-/// samples of a successful `Ingest::channel` (the merge was stored, or there
-/// was nothing to store).
-fn commit_samples(
-    ctx: &mut TickCtx,
-    provider: &ProviderId,
-    channel: &ChannelId,
-    samples: &[f64],
-    now: DateTime<Utc>,
-) {
-    let key = (provider.clone(), channel.clone());
-    for &sample in samples {
-        let row = next_accuracy_row(ctx.accuracy.get(&key), provider, channel, sample, now);
-        ctx.accuracy.insert(key.clone(), row);
-        ctx.dirty.insert(key.clone());
     }
 }
