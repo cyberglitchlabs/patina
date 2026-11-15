@@ -16,6 +16,10 @@ and it is not affiliated with or endorsed by Gracenote or Jellyfin.
 > **Status: pre-release (0.x).** The feature set for v1 is implemented, but no
 > version has been released yet. Expect rough edges and changes.
 
+**Working on it?** Start with [`CONTRIBUTING.md`](CONTRIBUTING.md) (rules for
+people and agents), the [`GLOSSARY.md`](GLOSSARY.md) (shared vocabulary), and
+the decision records in [`docs/adr/`](docs/adr/).
+
 **Running it?** The operator's guide is [`docs/operations.md`](docs/operations.md):
 tokens, request budgets, channel overrides, backups, alert rules and
 troubleshooting.
