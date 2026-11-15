@@ -227,6 +227,9 @@ pub struct WindowIngested {
     /// could not be stored, so the check was never reached.
     pub integrity: Option<TimelineReport>,
     /// True when every listed channel was stored (or had nothing to store).
+    /// False when the channels could not be stored (then `integrity` is
+    /// `None` and no merge was tried) and when any merge failed (then
+    /// `integrity` is `Some`).
     pub stored: bool,
     /// What the merges changed, summed over the window's channels.
     pub stats: MergeStats,
@@ -246,6 +249,7 @@ pub struct WindowIngested {
 ///
 /// `window` takes `&mut self`, so two windows can never be ingested at the
 /// same time, which `Store::apply_merge` relies on (see [`Ingest`]).
+#[must_use = "call `finish` at the end of the tick, or the hindsight averages are lost"]
 pub struct WindowIngest {
     store: Arc<dyn Store>,
     feed_generation: Option<Arc<AtomicU64>>,
