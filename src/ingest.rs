@@ -260,8 +260,8 @@ pub struct WindowIngest {
     /// which rows `finish` has to write.
     accuracy: BTreeMap<(ProviderId, ChannelId), AccuracyRow>,
     dirty: BTreeSet<(ProviderId, ChannelId)>,
-    /// False when the stored averages could not be read: `finish` then writes
-    /// nothing, so fresh averages never replace stored ones.
+    /// False when the stored averages could not be read: no hindsight is
+    /// kept this tick, so fresh averages never replace stored ones.
     accuracy_loaded: bool,
     channels_seen: BTreeSet<ChannelId>,
 }
@@ -269,7 +269,8 @@ pub struct WindowIngest {
 impl WindowIngest {
     /// Load the scoring inputs. If a table cannot be read the scorer uses
     /// neutral values for it (each table falls back on its own); merging
-    /// still works.
+    /// still works. If the accuracy table cannot be read, this tick also
+    /// keeps no hindsight, so the stored averages are never overwritten.
     pub async fn begin(
         store: Arc<dyn Store>,
         weights: &Weights,
@@ -395,14 +396,11 @@ impl WindowIngest {
     /// in `begin`. Returns how many distinct channels the tick's
     /// responses listed.
     pub async fn finish(self) -> usize {
-        // Without the stored averages the in-memory ones start from nothing;
-        // writing them would replace good history with a single sample.
-        let writes = if self.accuracy_loaded {
-            self.dirty.clone()
-        } else {
-            BTreeSet::new()
-        };
-        for key in &writes {
+        if !self.accuracy_loaded {
+            tracing::warn!("stored accuracy could not be read; this tick's hindsight is not saved");
+            return self.channels_seen.len();
+        }
+        for key in &self.dirty {
             if let Some(row) = self.accuracy.get(key)
                 && let Err(e) = self.store.provider_accuracy_upsert(row).await
             {
@@ -421,6 +419,9 @@ impl WindowIngest {
         samples: &[f64],
         now: DateTime<Utc>,
     ) {
+        if !self.accuracy_loaded {
+            return;
+        }
         let key = (provider.clone(), channel.clone());
         for &sample in samples {
             let row = next_accuracy_row(self.accuracy.get(&key), provider, channel, sample, now);
