@@ -1,18 +1,21 @@
 //! Master-guide ingest: how one provider's clean response gets into the
 //! master guide.
 //!
-//! Two entry points, in the order the scheduler uses them for a response:
+//! **The scheduler's interface is [`WindowIngest`]**: created once per tick,
+//! fed one parsed window at a time, finished at the end of the tick. It
+//! stores the response's channels ([`store_channels`]), checks its timeline,
+//! and merges each listed channel with [`Ingest::channel`], and it owns the
+//! tick's scoring inputs and hindsight-accuracy bookkeeping.
 //!
-//! 1. [`store_channels`], once per response: remember the provider's own
-//!    channel list and create or refresh the canonical channels that slots
-//!    refer to. Returns the channels the response listed.
-//! 2. [`Ingest::channel`], once per listed channel: given ONE provider's
-//!    successful response for ONE channel, it loads every stored slot the
-//!    response could touch, plans the merge (`merge::plan_merge`), applies
-//!    it in one transaction, writes score history for the slots it inserted
-//!    or updated, and returns an [`Ingested`] outcome: the counts, whether
-//!    anything was stored, the score-history rows written and the hindsight
-//!    samples this response yields.
+//! [`Ingest::channel`] is the lower-level per-channel merge. It stays public
+//! because tests drive it with a stub scorer and read the score-history rows
+//! and hindsight samples it returns; production code goes through
+//! [`WindowIngest`]. Given ONE provider's successful response for ONE channel,
+//! it loads every stored slot the response could touch, plans the merge
+//! (`merge::plan_merge`), applies it in one transaction, writes score history
+//! for the slots it inserted or updated, and returns an [`Ingested`] outcome:
+//! the counts, whether anything was stored, the score-history rows written and
+//! the hindsight samples this response yields.
 //!
 //! What the caller does NOT need to know (it all lives here):
 //!
@@ -34,25 +37,31 @@
 //!
 //! **One at a time.** `Store::apply_merge` does not notice that the data
 //! changed after the plan was computed. Callers must therefore never run
-//! two `Ingest::channel` calls for the same channel at the same time; the
-//! scheduler is a single task and ingests channels one after the other.
+//! two `Ingest::channel` calls for the same channel at the same time.
+//! [`WindowIngest::window`] takes `&mut self`, so the compiler enforces that
+//! for everything that goes through it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, TimeDelta, Utc};
 
+use crate::config::Weights;
 use crate::merge::{
     Coverage, MergeStats, PlanMatch, Scorer, SlotFields, SlotWithObservations, plan_merge,
 };
 use crate::model::{
     CanonicalChannel, ChannelId, Observation, ProviderId, SlotId, canonical_channel,
 };
-use crate::provider::ProviderChannel;
-use crate::score::hindsight_sample;
-use crate::store::{ScoreHistoryRow, Store};
+use crate::provider::{ParsedWindow, ProviderChannel};
+use crate::score::{
+    AccuracySnapshot, TimelineReport, WeightedScorer, hindsight_sample, next_accuracy_row,
+    timeline_integrity,
+};
+use crate::store::{AccuracyRow, ScoreHistoryRow, Store};
 
 /// A hindsight sample is only taken when the stored observation is at least
 /// this much older than the new one: comparing two fetches minutes apart
@@ -208,6 +217,204 @@ impl Ingest<'_> {
             samples,
             history,
         })
+    }
+}
+
+/// What ingesting one provider window did. See [`WindowIngest::window`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WindowIngested {
+    /// The response's gap/overlap check. `None` when the response's channels
+    /// could not be stored, so the check was never reached.
+    pub integrity: Option<TimelineReport>,
+    /// True when every listed channel was stored (or had nothing to store).
+    /// False when the channels could not be stored (then `integrity` is
+    /// `None` and no merge was tried) and when any merge failed (then
+    /// `integrity` is `Some`).
+    pub stored: bool,
+    /// What the merges changed, summed over the window's channels.
+    pub stats: MergeStats,
+    /// Channels whose merge failed in the store (logged; retried later).
+    pub merge_errors: usize,
+}
+
+/// Window ingest: one tick's worth of putting provider windows into the master
+/// guide. Created once per tick with [`WindowIngest::begin`], fed one clean
+/// window at a time with [`WindowIngest::window`], and closed with
+/// [`WindowIngest::finish`].
+///
+/// It owns the tick's scoring inputs (loaded once) and the hindsight-accuracy
+/// bookkeeping: averages are updated in memory as merges are stored and
+/// written in one batch by `finish`. Callers see none of that, only the
+/// outcome of each window.
+///
+/// `window` takes `&mut self`, so two windows can never be ingested at the
+/// same time, which `Store::apply_merge` relies on (see [`Ingest`]).
+#[must_use = "call `finish` at the end of the tick, or the hindsight averages are lost"]
+pub struct WindowIngest {
+    store: Arc<dyn Store>,
+    feed_generation: Option<Arc<AtomicU64>>,
+    /// Built once per tick over the accuracy/reliability rows loaded in
+    /// `begin` (not per slot or per channel).
+    scorer: WeightedScorer,
+    /// Hindsight averages, updated in memory during the tick; `dirty` says
+    /// which rows `finish` has to write.
+    accuracy: BTreeMap<(ProviderId, ChannelId), AccuracyRow>,
+    dirty: BTreeSet<(ProviderId, ChannelId)>,
+    channels_seen: BTreeSet<ChannelId>,
+}
+
+impl WindowIngest {
+    /// Load the scoring inputs. If a table cannot be read the scorer uses
+    /// neutral values for it (each table falls back on its own); merging
+    /// still works.
+    pub async fn begin(
+        store: Arc<dyn Store>,
+        weights: &Weights,
+        feed_generation: Option<Arc<AtomicU64>>,
+    ) -> Self {
+        let acc_rows = store
+            .provider_accuracy_load_all()
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %format!("{e:#}"), "cannot load accuracy; using neutral values");
+                Vec::new()
+            });
+        let rel_rows = store
+            .provider_reliability_load_all()
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %format!("{e:#}"), "cannot load reliability; using neutral values");
+                Vec::new()
+            });
+        let snapshot = AccuracySnapshot::from_rows(&acc_rows, &rel_rows);
+        WindowIngest {
+            store,
+            feed_generation,
+            scorer: WeightedScorer::new(weights.clone(), Arc::new(snapshot)),
+            accuracy: acc_rows
+                .into_iter()
+                .map(|r| ((r.provider.clone(), r.channel.clone()), r))
+                .collect(),
+            dirty: BTreeSet::new(),
+            channels_seen: BTreeSet::new(),
+        }
+    }
+
+    /// Put one clean response into the master guide, in this order: store
+    /// the channels it lists, check its timeline, then merge each listed
+    /// channel, one after the other. Channels the response does not list get
+    /// no coverage. A merge that fails leaves the master unchanged for that
+    /// channel and the others carry on; only a stored merge feeds hindsight.
+    ///
+    /// What the check and the stored flag mean for the provider's
+    /// reliability and the window's state is the ledger's call.
+    pub async fn window(
+        &mut self,
+        provider: &ProviderId,
+        lineup: &str,
+        window: Range<DateTime<Utc>>,
+        parsed: &ParsedWindow,
+        now: DateTime<Utc>,
+    ) -> WindowIngested {
+        let mut out = WindowIngested::default();
+
+        // (1) Channels: the provider's own list (for matching and overrides)
+        // and the canonical channels that slots refer to.
+        let listed = match store_channels(
+            self.store.as_ref(),
+            provider,
+            lineup,
+            &parsed.channels,
+            now,
+        )
+        .await
+        {
+            Ok(listed) => listed,
+            Err(e) => {
+                tracing::warn!(provider = %provider.0, error = %format!("{e:#}"), "cannot store channels");
+                return out;
+            }
+        };
+
+        // (2) Response quality, once per response. Gaps or overlaps beyond
+        // the limits count against the provider's reliability, but the data
+        // is still merged: holes are not contradictions, and the merge never
+        // lets a response make the guide worse.
+        out.integrity = Some(timeline_integrity(&parsed.observations));
+
+        // (3) Merge, channel by channel. Only channels this response lists
+        // are ingested: channels seen in earlier responses but absent from
+        // this one get no coverage.
+        let mut by_channel: BTreeMap<ChannelId, Vec<Observation>> = BTreeMap::new();
+        for o in &parsed.observations {
+            by_channel
+                .entry(o.channel.clone())
+                .or_default()
+                .push(o.clone());
+        }
+        out.stored = true;
+        for channel in listed {
+            self.channels_seen.insert(channel.clone());
+            let incoming = by_channel.remove(&channel).unwrap_or_default();
+            let guide = Ingest {
+                store: self.store.as_ref(),
+                scorer: &self.scorer,
+                feed_generation: self.feed_generation.as_deref(),
+            };
+            let response = ChannelResponse {
+                provider,
+                channel: &channel,
+                window: window.clone(),
+                observations: &incoming,
+            };
+            match guide.channel(response, now).await {
+                Ok(done) => {
+                    // The merge is stored: now the hindsight samples count.
+                    self.commit_samples(provider, &channel, &done.samples, now);
+                    out.stats.inserted += done.stats.inserted;
+                    out.stats.updated += done.stats.updated;
+                    out.stats.removed += done.stats.removed;
+                    out.stats.unchanged += done.stats.unchanged;
+                }
+                Err(e) => {
+                    tracing::warn!(provider = %provider.0, channel = %channel.0, error = %format!("{e:#}"), "merge failed; master unchanged for this channel");
+                    out.merge_errors += 1;
+                    out.stored = false;
+                }
+            }
+        }
+        out
+    }
+
+    /// Write the hindsight averages changed during the tick (one write per
+    /// provider and channel). Returns how many distinct channels the tick's
+    /// responses listed.
+    pub async fn finish(self) -> usize {
+        for key in &self.dirty {
+            if let Some(row) = self.accuracy.get(key)
+                && let Err(e) = self.store.provider_accuracy_upsert(row).await
+            {
+                tracing::warn!(provider = %key.0.0, channel = %key.1.0, error = %format!("{e:#}"), "cannot store hindsight accuracy");
+            }
+        }
+        self.channels_seen.len()
+    }
+
+    /// Fold one channel's hindsight samples into the in-memory averages.
+    /// Called only with the samples of a successful `Ingest::channel`.
+    fn commit_samples(
+        &mut self,
+        provider: &ProviderId,
+        channel: &ChannelId,
+        samples: &[f64],
+        now: DateTime<Utc>,
+    ) {
+        let key = (provider.clone(), channel.clone());
+        for &sample in samples {
+            let row = next_accuracy_row(self.accuracy.get(&key), provider, channel, sample, now);
+            self.accuracy.insert(key.clone(), row);
+            self.dirty.insert(key.clone());
+        }
     }
 }
 
