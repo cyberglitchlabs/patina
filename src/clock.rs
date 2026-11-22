@@ -65,6 +65,12 @@ impl FakeClock {
     }
 }
 
+/// Whole Unix seconds of `t`, rounded down. (`Timestamp::as_second` rounds
+/// towards zero, which is the wrong way for a time just before 1970.)
+pub(crate) fn floor_second(t: Timestamp) -> i64 {
+    t.as_second() - i64::from(t.subsec_nanosecond() < 0)
+}
+
 #[async_trait]
 impl Clock for FakeClock {
     fn now(&self) -> Timestamp {

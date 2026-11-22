@@ -42,3 +42,10 @@ fn times_before_1970_round_down_not_towards_zero() {
         utc(1969, 12, 31, 18, 0, 0)
     );
 }
+
+#[test]
+fn a_time_just_before_1970_belongs_to_the_window_before_it() {
+    // -0.5 s: the window is [-6 h, 0), not [0, 6 h).
+    let t = Timestamp::new(0, -500_000_000).unwrap();
+    assert_eq!(window_floor(t), Timestamp::new(-6 * 3600, 0).unwrap());
+}

@@ -76,7 +76,7 @@ impl<D: Backend> SqlStore<D> {
     }
 }
 
-/// Unix seconds -> DateTime.
+/// Unix seconds -> Timestamp.
 fn from_unix(secs: i64) -> Result<Timestamp> {
     Timestamp::from_second(secs).with_context(|| format!("timestamp {secs} out of range"))
 }

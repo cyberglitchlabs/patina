@@ -607,8 +607,8 @@ where
 /// `now - days`, never after `now`. Saturates for absurd day counts instead
 /// of overflowing.
 fn cutoff_days(now: Timestamp, days: u32) -> Timestamp {
-    Some(SignedDuration::from_hours(24 * i64::from(days)))
-        .and_then(|d| now.checked_sub(d).ok())
+    now.checked_sub(SignedDuration::from_hours(24 * i64::from(days)))
+        .ok()
         .unwrap_or(Timestamp::MIN)
         .min(now)
 }

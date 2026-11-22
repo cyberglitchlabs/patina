@@ -669,7 +669,8 @@ pub fn plan_merge(
 
 /// `t` without its sub-second part (always in range: it came from one).
 fn whole_seconds(t: Timestamp) -> Timestamp {
-    Timestamp::from_second(t.as_second()).expect("a whole-second time of a valid time is valid")
+    Timestamp::from_second(crate::clock::floor_second(t))
+        .expect("a whole-second time of a valid time is valid")
 }
 
 /// Step 1: keep only this response's valid observations for the channel,

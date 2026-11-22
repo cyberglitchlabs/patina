@@ -300,7 +300,7 @@ impl SchedulerStatus {
 pub fn window_floor(t: Timestamp) -> Timestamp {
     let len = WINDOW.as_secs();
     // div_euclid rounds towards minus infinity, also for times before 1970.
-    let start = t.as_second().div_euclid(len) * len;
+    let start = crate::clock::floor_second(t).div_euclid(len) * len;
     Timestamp::from_second(start).expect("grid start is in range")
 }
 
