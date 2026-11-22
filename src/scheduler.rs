@@ -235,7 +235,10 @@ impl SchedulerStatus {
     /// The lock, also after a panic elsewhere poisoned it: the data is plain
     /// values, so `/status` keeps working instead of panicking forever.
     fn state(&self) -> std::sync::MutexGuard<'_, Observed> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+        self.inner.lock().unwrap_or_else(|e| {
+            tracing::warn!("scheduler status lock was poisoned by a panic; carrying on");
+            e.into_inner()
+        })
     }
 
     /// Everything `/status` shows of the scheduler, as of `now`.
@@ -357,7 +360,7 @@ impl Scheduler {
 
     /// The latest response-quality check for each provider.
     pub fn response_quality(&self) -> BTreeMap<ProviderId, ResponseQuality> {
-        self.status.snapshot(self.clock.now()).quality
+        self.status.state().quality.clone()
     }
 
     /// One full pass: decide which windows are due, fetch, parse, merge.
