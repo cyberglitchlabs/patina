@@ -176,7 +176,7 @@ pub async fn build(config: Config, deps: AppDeps) -> Result<App, BuildError> {
     let feeds = Arc::new(Feeds::new(FeedsConfig {
         store: store.clone(),
         clock: clock.clone(),
-        tz: config.timezone,
+        tz: config.timezone.clone(),
         horizon_days: config.horizon_days,
         token: config.feed_token.clone(),
         sources: feed_sources_from_config(&config, source_overrides, client.clone()),

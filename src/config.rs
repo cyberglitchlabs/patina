@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use chrono_tz::Tz;
+use jiff::tz::TimeZone;
 use serde::Deserialize;
 
 /// Everything that can go wrong while loading configuration. Each message is
@@ -275,7 +275,7 @@ pub struct Config {
     /// A tracing filter such as "info" or "patina=debug,info".
     pub log: String,
     pub database_url: String,
-    pub timezone: Tz,
+    pub timezone: TimeZone,
     /// If set, XMLTV feed URLs require this token.
     pub feed_token: Option<String>,
     /// If set, /status and /metrics require this as a bearer token.
@@ -360,9 +360,13 @@ pub fn empty_token_notices(
         .collect()
 }
 
-fn parse_tz(s: &str) -> Result<Tz, String> {
-    s.parse::<Tz>()
-        .map_err(|_| format!("unknown timezone '{s}' (use an IANA name like America/Chicago)"))
+fn parse_tz(s: &str) -> Result<TimeZone, String> {
+    // jiff matches names without regard to case; accept only the exact name
+    // so a typo is reported instead of being quietly normalised.
+    TimeZone::get(s)
+        .ok()
+        .filter(|tz| tz.iana_name() == Some(s))
+        .ok_or_else(|| format!("unknown timezone '{s}' (use an IANA name like America/Chicago)"))
 }
 
 /// The text of an `Invalid` error without its "invalid config:" prefix, so it
@@ -417,7 +421,8 @@ impl Config {
             (None, Some(s)) => {
                 parse_tz(s).map_err(|r| ConfigError::Invalid(format!("timezone: {r}")))?
             }
-            (None, None) => chrono_tz::America::Chicago,
+            (None, None) => TimeZone::get("America/Chicago")
+                .expect("America/Chicago is in the bundled tz database"),
         };
 
         // Retention: TOML table first, then per-field env overrides on top.
@@ -570,7 +575,7 @@ impl Config {
             self.listen,
             self.log,
             redact_url(&self.database_url),
-            self.timezone,
+            self.timezone.iana_name().unwrap_or("unknown"),
             mask(&self.feed_token),
             mask(&self.admin_token),
             self.horizon_days,

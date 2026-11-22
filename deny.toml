@@ -22,11 +22,10 @@ yanked = "deny"
 # Add RUSTSEC ids here (with a reason) only for advisories that cannot affect
 # us and cannot be fixed yet.
 ignore = [
-    # chrono and chrono-tz were marked unmaintained on 2026-09-14. No known
-    # vulnerability; replacing them touches nearly every module. Revisit
-    # when a maintained successor is chosen, or if a vulnerability appears.
+    # chrono was marked unmaintained on 2026-09-14. No known vulnerability;
+    # it is being replaced by jiff (chrono-tz is already gone). Remove this
+    # entry when the last chrono import is.
     "RUSTSEC-2026-0543",
-    "RUSTSEC-2026-0555",
 ]
 
 [licenses]

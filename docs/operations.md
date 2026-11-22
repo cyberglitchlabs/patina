@@ -662,7 +662,9 @@ them.
 
 **Clock or timezone looks wrong.** XMLTV times carry the offset of
 `timezone` (default `America/Chicago`). Set `PATINA_TIMEZONE` to your own IANA
-zone (`Europe/Berlin`, not `CET`). The budget day and the refresh logic use UTC
+zone (`Europe/Berlin`, not `CET`), spelled exactly. The zone rules are built
+into the binary (ADR 0004), so a tz-database update on the host changes nothing;
+upgrade Patina to pick up a new daylight-saving rule. The budget day and the refresh logic use UTC
 and the system clock; a container with a badly wrong clock will misjudge which
 windows are due. Check `date -u` on the host.
 

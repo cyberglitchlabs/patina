@@ -15,7 +15,7 @@ fn defaults_apply_with_empty_env_and_no_toml() {
     assert_eq!(c.listen.to_string(), "0.0.0.0:8080");
     assert_eq!(c.log, "info");
     assert_eq!(c.database_url, "sqlite://patina.db?mode=rwc");
-    assert_eq!(c.timezone, chrono_tz::America::Chicago);
+    assert_eq!(c.timezone.iana_name(), Some("America/Chicago"));
     assert_eq!(c.feed_token, None);
     assert_eq!(c.admin_token, None);
     assert_eq!(c.retention.images_days, 3);
@@ -45,7 +45,7 @@ horizon_days = 3
     assert_eq!(c.listen.to_string(), "127.0.0.1:2222");
     assert_eq!(c.horizon_days, 5);
     // Not set in env, so the TOML value stands.
-    assert_eq!(c.timezone, chrono_tz::UTC);
+    assert_eq!(c.timezone.iana_name(), Some("UTC"));
 }
 
 #[test]
@@ -162,6 +162,41 @@ fn bad_env_values_name_the_variable() {
     assert!(err.to_string().contains("PATINA_LISTEN"), "got: {err}");
     let err = Config::load(&env(&[("PATINA_TIMEZONE", "Mars/Base")]), None).unwrap_err();
     assert!(err.to_string().contains("PATINA_TIMEZONE"), "got: {err}");
+}
+
+#[test]
+fn timezone_takes_iana_names_from_env_and_toml() {
+    for name in ["Europe/London", "Asia/Kolkata", "UTC"] {
+        let c = Config::load(&env(&[("PATINA_TIMEZONE", name)]), None).unwrap();
+        assert_eq!(c.timezone.iana_name(), Some(name));
+        let c = Config::load(&env(&[]), Some(&format!("timezone = \"{name}\""))).unwrap();
+        assert_eq!(c.timezone.iana_name(), Some(name));
+    }
+}
+
+#[test]
+fn unknown_timezone_is_rejected_with_a_hint_and_the_source() {
+    for bad in ["Mars/Base", "Chicago"] {
+        let err = Config::load(&env(&[("PATINA_TIMEZONE", bad)]), None).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("PATINA_TIMEZONE") && msg.contains(bad),
+            "got: {msg}"
+        );
+        assert!(
+            msg.contains("IANA"),
+            "should hint at the format, got: {msg}"
+        );
+    }
+    // Names are exact: a wrong case is a typo, not something to normalise.
+    let err = Config::load(&env(&[("PATINA_TIMEZONE", "america/chicago")]), None).unwrap_err();
+    assert!(err.to_string().contains("america/chicago"), "got: {err}");
+    let err = Config::load(&env(&[]), Some("timezone = \"Mars/Base\"")).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("timezone") && msg.contains("Mars/Base"),
+        "got: {msg}"
+    );
 }
 
 #[test]

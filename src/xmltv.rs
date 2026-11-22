@@ -9,8 +9,9 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
-use chrono::{DateTime, Datelike, Utc};
-use chrono_tz::Tz;
+use chrono::{DateTime, Utc};
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
 
 use crate::model::{CanonicalChannel, MasterSlot};
 
@@ -27,7 +28,7 @@ use crate::model::{CanonicalChannel, MasterSlot};
 ///   outside 0..=9999).
 /// * times carry the UTC offset that applies at that very instant in `tz`,
 ///   so a feed crossing a daylight-saving change switches offset mid-feed.
-pub fn render(channels: &[CanonicalChannel], slots: &[MasterSlot], tz: Tz) -> String {
+pub fn render(channels: &[CanonicalChannel], slots: &[MasterSlot], tz: &TimeZone) -> String {
     let mut out = String::with_capacity(256 + channels.len() * 160 + slots.len() * 400);
     out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     out.push_str("<tv generator-info-name=\"patina\">\n");
@@ -132,16 +133,22 @@ fn non_blank(s: &Option<String>) -> Option<&str> {
     s.as_deref().filter(|s| !s.trim().is_empty())
 }
 
-/// `YYYYMMDDHHMMSS +ZZZZ` in `tz`, or `None` if the local year does not fit
-/// in four digits. The offset is looked up for this exact instant, which is
-/// what makes the two 01:30s of a fall-back night come out differently.
-/// Sub-second parts are dropped by the formatter.
-fn xmltv_time(t: DateTime<Utc>, tz: Tz) -> Option<String> {
-    let local = t.with_timezone(&tz);
+/// `YYYYMMDDHHMMSS +ZZZZ` in `tz`. The offset is looked up for this exact
+/// instant, which is what makes the two 01:30s of a fall-back night come out
+/// differently. Sub-second parts are dropped when the instant is built.
+/// `None` when XMLTV cannot express the time: an instant outside jiff's
+/// range, a local year that does not fit in four digits, or an offset with
+/// seconds (local mean time before a zone adopted standard time).
+fn xmltv_time(t: DateTime<Utc>, tz: &TimeZone) -> Option<String> {
+    let instant = Timestamp::from_second(t.timestamp()).ok()?;
+    let local = instant.to_zoned_datetime(tz.clone());
     if !(0..=9999).contains(&local.year()) {
         return None;
     }
-    Some(local.format("%Y%m%d%H%M%S %z").to_string())
+    if local.offset().seconds() % 60 != 0 {
+        return None;
+    }
+    jiff::fmt::strtime::format("%Y%m%d%H%M%S %z", &local).ok()
 }
 
 /// Is `c` allowed in an XML 1.0 document? Tab, newline and carriage return
