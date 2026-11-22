@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use chrono::{DateTime, TimeDelta, Utc};
-use chrono_tz::Tz;
+use jiff::tz::TimeZone;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -128,7 +128,7 @@ impl ChannelSource for BrokenSource {
 pub struct FeedsConfig {
     pub store: Arc<dyn Store>,
     pub clock: Arc<dyn Clock>,
-    pub tz: Tz,
+    pub tz: TimeZone,
     pub horizon_days: u32,
     /// `Config.feed_token`; `None` means the feeds are open.
     pub token: Option<String>,
@@ -174,7 +174,7 @@ struct CacheEntry {
 pub struct Feeds {
     store: Arc<dyn Store>,
     clock: Arc<dyn Clock>,
-    tz: Tz,
+    tz: TimeZone,
     horizon_days: u32,
     token: Option<String>,
     sources: Vec<FeedSourceSpec>,
@@ -432,7 +432,7 @@ impl Feeds {
                 }
             }
         }
-        Ok(xmltv::render(&channels, &slots, self.tz))
+        Ok(xmltv::render(&channels, &slots, &self.tz))
     }
 
     /// Provider channels of all the source's lineups, one per provider

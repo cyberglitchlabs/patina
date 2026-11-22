@@ -1,9 +1,13 @@
 //! XMLTV rendering: pure function tests (no store, no HTTP).
 
-use chrono::{DateTime, TimeDelta, TimeZone, Utc};
-use chrono_tz::{America::Chicago, Tz};
+use chrono::{DateTime, TimeDelta, TimeZone as _, Utc};
+use jiff::tz::TimeZone;
 use patina::model::{CanonicalChannel, ChannelId, MasterSlot, ProviderId, ScoreBreakdown, SlotId};
 use patina::xmltv::render;
+
+fn chicago() -> TimeZone {
+    TimeZone::get("America/Chicago").unwrap()
+}
 
 fn chan(id: &str, number: &str, name: &str) -> CanonicalChannel {
     CanonicalChannel {
@@ -41,7 +45,7 @@ fn slot(channel: &str, start: DateTime<Utc>, end: DateTime<Utc>, title: &str) ->
 
 fn one_slot_xml(s: MasterSlot) -> String {
     let id = s.channel.0.clone();
-    render(&[chan(&id, "4.1", "WCCO-DT")], &[s], Chicago)
+    render(&[chan(&id, "4.1", "WCCO-DT")], &[s], &chicago())
 }
 
 fn parse(xml: &str) -> roxmltree::Document<'_> {
@@ -94,7 +98,7 @@ fn golden_output_for_fixture_slots() {
         "Local News",
     );
     // Deliberately out of order: render sorts by channel (feed order), start.
-    let xml = render(&channels, &[c, b, a], Chicago);
+    let xml = render(&channels, &[c, b, a], &chicago());
 
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -112,7 +116,7 @@ fn golden_output_for_fixture_slots() {
 
 #[test]
 fn channel_display_names_use_number_and_name() {
-    let xml = render(&[chan("WCCODT.us", "4.1", "WCCO-DT")], &[], Chicago);
+    let xml = render(&[chan("WCCODT.us", "4.1", "WCCO-DT")], &[], &chicago());
     let doc = parse(&xml);
     let ch = doc
         .descendants()
@@ -289,9 +293,9 @@ fn offsets_are_right_for_zones_off_the_whole_hour_and_in_the_south() {
         ),
     ];
     for (zone, instant, expected) in cases {
-        let tz: Tz = zone.parse().unwrap();
+        let tz = TimeZone::get(zone).unwrap();
         let s = slot("WCCODT.us", instant, instant + TimeDelta::minutes(30), "T");
-        let xml = render(&[chan("WCCODT.us", "4.1", "WCCO-DT")], &[s], tz);
+        let xml = render(&[chan("WCCODT.us", "4.1", "WCCO-DT")], &[s], &tz);
         assert_eq!(programme_attrs(&xml)[0].0, expected, "{zone} at {instant}");
     }
 }
@@ -362,7 +366,7 @@ fn emoji_and_non_latin_text_roundtrip() {
     let xml = render(
         &[chan("WCCODT.us", "4.1", "日本 TV \u{1F4FA}")],
         &[s],
-        Chicago,
+        &chicago(),
     );
     assert!(xml.contains(title), "text must pass through untouched");
     let doc = parse(&xml);
@@ -395,7 +399,7 @@ fn output_parses_as_xml() {
         s.genres = vec!["Drama".into()];
         slots.push(s);
     }
-    let xml = render(&channels, &slots, Chicago);
+    let xml = render(&channels, &slots, &chicago());
     assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
     let doc = parse(&xml);
     assert_eq!(doc.root_element().tag_name().name(), "tv");
@@ -534,7 +538,7 @@ fn sub_second_and_far_future_slots_render_valid_times() {
     let ok = slot("WCCODT.us", far, far + TimeDelta::hours(1), "Far");
     let beyond = Utc.with_ymd_and_hms(10000, 1, 1, 0, 0, 0).unwrap();
     let bad = slot("WCCODT.us", beyond, beyond + TimeDelta::hours(1), "Beyond");
-    let xml = render(&[chan("WCCODT.us", "4.1", "W")], &[ok, bad], Tz::UTC);
+    let xml = render(&[chan("WCCODT.us", "4.1", "W")], &[ok, bad], &TimeZone::UTC);
     let attrs = programme_attrs(&xml);
     assert_eq!(attrs.len(), 1);
     assert_eq!(attrs[0].0, "20991231230000 +0000");
@@ -554,7 +558,7 @@ fn programmes_are_grouped_by_channel_then_start() {
         s("B.us", 22, "b1"),
         s("GONE.us", 22, "x"),
     ];
-    let xml = render(&channels, &slots, Chicago);
+    let xml = render(&channels, &slots, &chicago());
     let doc = parse(&xml);
     let titles: Vec<_> = doc
         .descendants()
@@ -576,7 +580,7 @@ fn every_channel_has_a_bare_numeric_display_name() {
             chan("B.us", "11.1", "KARE 11"),
         ],
         &[],
-        Chicago,
+        &chicago(),
     );
     let doc = parse(&xml);
     for ch in doc.descendants().filter(|n| n.has_tag_name("channel")) {

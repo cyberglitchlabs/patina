@@ -13,9 +13,9 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use bytes::Bytes;
-use chrono::{DateTime, TimeDelta, TimeZone, Utc};
-use chrono_tz::America::Chicago;
+use chrono::{DateTime, TimeDelta, TimeZone as _, Utc};
 use http_body_util::BodyExt;
+use jiff::tz::TimeZone;
 use patina::auth::ct_eq;
 use patina::channels::matching::Overrides;
 use patina::channels::{StaticSource, TunerChannel};
@@ -133,7 +133,7 @@ async fn rig(opts: Opts) -> Rig {
     let feeds = Arc::new(Feeds::new(FeedsConfig {
         store: store.clone(),
         clock: clock.clone(),
-        tz: Chicago,
+        tz: TimeZone::get("America/Chicago").unwrap(),
         horizon_days: 1,
         token: opts.feed_token.map(str::to_string),
         sources: source_specs,

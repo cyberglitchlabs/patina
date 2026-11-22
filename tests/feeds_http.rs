@@ -13,9 +13,9 @@ use async_trait::async_trait;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use chrono::{DateTime, TimeDelta, TimeZone, Utc};
-use chrono_tz::America::Chicago;
+use chrono::{DateTime, TimeDelta, TimeZone as _, Utc};
 use http_body_util::BodyExt;
+use jiff::tz::TimeZone;
 use patina::channels::hdhomerun::parse_lineup;
 use patina::channels::matching::Overrides;
 use patina::channels::{ChannelSource, StaticSource, TunerChannel};
@@ -108,7 +108,7 @@ async fn env_with(
     let feeds = Arc::new(Feeds::new(FeedsConfig {
         store: store.clone(),
         clock: clock.clone(),
-        tz: Chicago,
+        tz: TimeZone::get("America/Chicago").unwrap(),
         horizon_days: 7,
         token: token.map(str::to_string),
         sources,
@@ -815,7 +815,7 @@ async fn feed_cache_is_invalidated_when_scheduler_merges() {
     let feeds = Arc::new(Feeds::new(FeedsConfig {
         store: store.clone(),
         clock: feed_clock,
-        tz: Chicago,
+        tz: TimeZone::get("America/Chicago").unwrap(),
         horizon_days: 7,
         token: None,
         sources: vec![FeedSourceSpec {
@@ -1052,7 +1052,7 @@ async fn real_fixture_feed_has_83_matched_channels_and_programmes() {
         Arc::new(Feeds::new(FeedsConfig {
             store: store.clone(),
             clock: Arc::new(FakeClock::new(now0())),
-            tz: Chicago,
+            tz: TimeZone::get("America/Chicago").unwrap(),
             horizon_days: 7,
             token: None,
             sources: vec![FeedSourceSpec {
