@@ -46,6 +46,7 @@ pub async fn run_contract(store: Arc<dyn Store>) {
     janitor_state_tables_are_pruned_by_rule(&store).await;
     approx_size_grows_with_data(&store).await;
     apply_merge_reports_inserted_ids(&store).await;
+    season_and_episode_are_32_bit_on_every_backend(&store).await;
 }
 
 async fn migrate_is_idempotent(store: &Arc<dyn Store>) {
@@ -1501,4 +1502,61 @@ async fn apply_merge_reports_inserted_ids(store: &Arc<dyn Store>) {
     assert_eq!(applied.stats.removed, 3);
     assert!(applied.inserted_ids.is_empty());
     assert!(full().await.is_empty());
+}
+
+/// Season and episode are 32-bit INTEGER columns on both backends, so a value
+/// that does not fit is an error everywhere (not stored on one backend and
+/// refused on the other), and the largest value that fits round-trips.
+async fn season_and_episode_are_32_bit_on_every_backend(store: &Arc<dyn Store>) {
+    use patina::merge::{MergePlan, NewSlot, SlotFields};
+    use patina::model::ScoreBreakdown;
+
+    let chan = ChannelId("SEASON32.us".into());
+    store
+        .upsert_channels(&[CanonicalChannel {
+            id: chan.clone(),
+            number: "9.1".into(),
+            name: "S".into(),
+            call_sign: "SEASON32".into(),
+        }])
+        .await
+        .unwrap();
+    let now = Utc.with_ymd_and_hms(2026, 11, 1, 12, 0, 0).unwrap();
+    let plan_with = |season: u32, episode: u32| {
+        let mut plan = MergePlan::empty(now);
+        plan.inserts.push(NewSlot {
+            channel: chan.clone(),
+            fields: SlotFields {
+                start: now,
+                end: now + TimeDelta::minutes(30),
+                title: "t".into(),
+                subtitle: None,
+                description: None,
+                image_url: None,
+                season: Some(season),
+                episode: Some(episode),
+                rating: None,
+                genres: vec![],
+                winner: ProviderId("gracenote".into()),
+                score: 1.0,
+                breakdown: ScoreBreakdown::default(),
+            },
+        });
+        plan
+    };
+    let too_big = u32::try_from(i32::MAX).unwrap() + 1;
+    assert!(store.apply_merge(plan_with(too_big, 1)).await.is_err());
+    assert!(store.apply_merge(plan_with(1, too_big)).await.is_err());
+
+    store
+        .apply_merge(plan_with(i32::MAX as u32, i32::MAX as u32))
+        .await
+        .unwrap();
+    let slots = store
+        .slots_with_observations(&chan, now - TimeDelta::hours(1), now + TimeDelta::hours(1))
+        .await
+        .unwrap();
+    assert_eq!(slots.len(), 1);
+    assert_eq!(slots[0].slot.season, Some(i32::MAX as u32));
+    assert_eq!(slots[0].slot.episode, Some(i32::MAX as u32));
 }
