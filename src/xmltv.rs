@@ -133,14 +133,19 @@ fn non_blank(s: &Option<String>) -> Option<&str> {
     s.as_deref().filter(|s| !s.trim().is_empty())
 }
 
-/// `YYYYMMDDHHMMSS +ZZZZ` in `tz`, or `None` if the local year does not fit
-/// in four digits. The offset is looked up for this exact instant, which is
-/// what makes the two 01:30s of a fall-back night come out differently.
-/// Sub-second parts are dropped by the formatter.
+/// `YYYYMMDDHHMMSS +ZZZZ` in `tz`. The offset is looked up for this exact
+/// instant, which is what makes the two 01:30s of a fall-back night come out
+/// differently. Sub-second parts are dropped when the instant is built.
+/// `None` when XMLTV cannot express the time: an instant outside jiff's
+/// range, a local year that does not fit in four digits, or an offset with
+/// seconds (local mean time before a zone adopted standard time).
 fn xmltv_time(t: DateTime<Utc>, tz: &TimeZone) -> Option<String> {
     let instant = Timestamp::from_second(t.timestamp()).ok()?;
     let local = instant.to_zoned_datetime(tz.clone());
     if !(0..=9999).contains(&local.year()) {
+        return None;
+    }
+    if local.offset().seconds() % 60 != 0 {
         return None;
     }
     jiff::fmt::strtime::format("%Y%m%d%H%M%S %z", &local).ok()

@@ -15,9 +15,9 @@ axum = "0.8.9"
 bytes = "1.12.1"
 chrono = { version = "0.4.45", features = ["serde"] }
 fastrand = "2.5.0"
-# Time-zone data is compiled in: the runtime image has no /usr/share/zoneinfo.
-jiff = { version = "1.0.2", default-features = false, features = ["alloc", "std", "perf-inline", "tzdb-bundle-always"] }
 flate2 = "1.1.10"
+# Time-zone data is compiled in (docs/adr/0004): the runtime image has no zoneinfo.
+jiff = { version = "1.0.2", default-features = false, features = ["alloc", "std", "perf-inline", "tzdb-bundle-always"] }
 prometheus = { version = "0.14.0", default-features = false }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "query", "json"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }

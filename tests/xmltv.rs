@@ -301,6 +301,20 @@ fn offsets_are_right_for_zones_off_the_whole_hour_and_in_the_south() {
 }
 
 #[test]
+fn a_time_whose_offset_has_seconds_is_skipped_not_misprinted() {
+    // Chicago kept local mean time (-05:50:36) until 1883; XMLTV offsets are
+    // whole minutes, so such a programme cannot be expressed.
+    let old = slot(
+        "WCCODT.us",
+        utc(1850, 6, 1, 12, 0, 0),
+        utc(1850, 6, 1, 12, 30, 0),
+        "Old",
+    );
+    let xml = one_slot_xml(old);
+    assert!(programme_attrs(&xml).is_empty(), "got: {xml}");
+}
+
+#[test]
 fn spring_forward_2027_03_14_skips_the_02_00_hour() {
     // 07:59:59Z is 01:59:59 CST (-0600); 08:00Z is 03:00:00 CDT (-0500).
     let xml = one_slot_xml(slot(

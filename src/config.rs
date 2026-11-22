@@ -361,8 +361,12 @@ pub fn empty_token_notices(
 }
 
 fn parse_tz(s: &str) -> Result<TimeZone, String> {
+    // jiff matches names without regard to case; accept only the exact name
+    // so a typo is reported instead of being quietly normalised.
     TimeZone::get(s)
-        .map_err(|_| format!("unknown timezone '{s}' (use an IANA name like America/Chicago)"))
+        .ok()
+        .filter(|tz| tz.iana_name() == Some(s))
+        .ok_or_else(|| format!("unknown timezone '{s}' (use an IANA name like America/Chicago)"))
 }
 
 /// The text of an `Invalid` error without its "invalid config:" prefix, so it

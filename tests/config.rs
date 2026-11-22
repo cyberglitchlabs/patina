@@ -188,6 +188,9 @@ fn unknown_timezone_is_rejected_with_a_hint_and_the_source() {
             "should hint at the format, got: {msg}"
         );
     }
+    // Names are exact: a wrong case is a typo, not something to normalise.
+    let err = Config::load(&env(&[("PATINA_TIMEZONE", "america/chicago")]), None).unwrap_err();
+    assert!(err.to_string().contains("america/chicago"), "got: {err}");
     let err = Config::load(&env(&[]), Some("timezone = \"Mars/Base\"")).unwrap_err();
     let msg = err.to_string();
     assert!(
