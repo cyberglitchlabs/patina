@@ -3,13 +3,15 @@
 //! places the two differ (connecting, migrations, the placeholder style, the
 //! read snapshot and the database size).
 
+use jiff::Timestamp;
+use jiff::civil::Date;
+use jiff::tz::TimeZone;
 use std::borrow::Cow;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::query::{Query, QueryScalar};
 use sqlx::{
     AssertSqlSafe, ColumnIndex, Database, Decode, Encode, Executor, IntoArguments, Pool, Row,
@@ -75,8 +77,8 @@ impl<D: Backend> SqlStore<D> {
 }
 
 /// Unix seconds -> DateTime.
-fn from_unix(secs: i64) -> Result<DateTime<Utc>> {
-    DateTime::from_timestamp(secs, 0).with_context(|| format!("timestamp {secs} out of range"))
+fn from_unix(secs: i64) -> Result<Timestamp> {
+    Timestamp::from_second(secs).with_context(|| format!("timestamp {secs} out of range"))
 }
 
 /// Slots of one channel overlapping the half-open range [from, to): a slot
@@ -214,8 +216,8 @@ where
         Ok(())
     }
 
-    async fn guide_stats(&self, now: DateTime<Utc>) -> Result<GuideStats> {
-        let now = now.timestamp();
+    async fn guide_stats(&self, now: Timestamp) -> Result<GuideStats> {
+        let now = now.as_second();
         let slots_total: i64 = query_scalar::<D, _>("SELECT COUNT(*) FROM slots")
             .fetch_one(&self.pool)
             .await?;
@@ -237,7 +239,7 @@ where
         Ok(GuideStats {
             slots_total: u64::try_from(slots_total).unwrap_or(0),
             future_slots_total: u64::try_from(future_slots_total).unwrap_or(0),
-            newest_slot_end: newest.and_then(|t| DateTime::from_timestamp(t, 0)),
+            newest_slot_end: newest.and_then(|t| Timestamp::from_second(t).ok()),
             channels_with_future_slots: future_channels.len() as u64,
             future_channels: future_channels.into_iter().map(ChannelId).collect(),
         })
@@ -291,13 +293,13 @@ where
     async fn slots(
         &self,
         channel: ChannelId,
-        from: DateTime<Utc>,
-        to: DateTime<Utc>,
+        from: Timestamp,
+        to: Timestamp,
     ) -> Result<Vec<MasterSlot>> {
         let rows = query::<D>(SLOTS_SQL)
             .bind(&channel.0)
-            .bind(to.timestamp())
-            .bind(from.timestamp())
+            .bind(to.as_second())
+            .bind(from.as_second())
             .fetch_all(&self.pool)
             .await?;
         rows.iter().map(slot_from_row).collect()
@@ -306,16 +308,16 @@ where
     async fn slots_with_observations(
         &self,
         channel: &ChannelId,
-        from: DateTime<Utc>,
-        to: DateTime<Utc>,
+        from: Timestamp,
+        to: Timestamp,
     ) -> Result<Vec<SlotWithObservations>> {
         // One transaction so both reads see the same database state.
         let mut tx = self.pool.begin().await?;
         D::snapshot(&mut tx).await?;
         let slot_rows = query::<D>(SLOTS_SQL)
             .bind(&channel.0)
-            .bind(to.timestamp())
-            .bind(from.timestamp())
+            .bind(to.as_second())
+            .bind(from.as_second())
             .fetch_all(&mut *tx)
             .await?;
         // Observations of exactly those slots (same WHERE as SLOTS_SQL).
@@ -328,8 +330,8 @@ where
              ORDER BY o.slot_id, o.provider",
         )
         .bind(&channel.0)
-        .bind(to.timestamp())
-        .bind(from.timestamp())
+        .bind(to.as_second())
+        .bind(from.as_second())
         .fetch_all(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -380,7 +382,7 @@ where
             unchanged: plan.unchanged,
             ..MergeStats::default()
         };
-        let at = plan.planned_at.timestamp();
+        let at = plan.planned_at.as_second();
 
         // 1. Removals. Their observations go too (ON DELETE CASCADE).
         for id in &plan.removals {
@@ -420,8 +422,8 @@ where
                  description = ?, image_id = ?, season = ?, episode = ?, rating = ?, genres = ?, \
                  winner_provider = ?, score = ?, breakdown = ?, updated_at = ? WHERE id = ?",
             )
-            .bind(f.start.timestamp())
-            .bind(f.end.timestamp())
+            .bind(f.start.as_second())
+            .bind(f.end.as_second())
             .bind(&f.title)
             .bind(&f.subtitle)
             .bind(&f.description)
@@ -453,8 +455,8 @@ where
                  ON CONFLICT (channel_id, start_utc) DO NOTHING RETURNING id",
             )
             .bind(&channel.0)
-            .bind(f.start.timestamp())
-            .bind(f.end.timestamp())
+            .bind(f.start.as_second())
+            .bind(f.end.as_second())
             .bind(&f.title)
             .bind(&f.subtitle)
             .bind(&f.description)
@@ -479,7 +481,7 @@ where
                         "SELECT id FROM slots WHERE channel_id = ? AND start_utc = ?",
                     )
                     .bind(&channel.0)
-                    .bind(f.start.timestamp())
+                    .bind(f.start.as_second())
                     .fetch_one(&mut *tx)
                     .await?
                 }
@@ -505,8 +507,8 @@ where
             )
             .bind(slot_id)
             .bind(&o.provider.0)
-            .bind(o.start.timestamp())
-            .bind(o.end.timestamp())
+            .bind(o.start.as_second())
+            .bind(o.end.as_second())
             .bind(&o.title)
             .bind(&o.subtitle)
             .bind(&o.description)
@@ -515,8 +517,8 @@ where
             .bind(o.episode.map(i32::try_from).transpose()?)
             .bind(&o.rating)
             .bind(serde_json::to_string(&o.genres)?)
-            .bind(o.fetched_at.timestamp())
-            .bind(w.first_seen.timestamp())
+            .bind(o.fetched_at.as_second())
+            .bind(w.first_seen.as_second())
             .bind(i32::try_from(w.changes)?)
             .execute(&mut *tx)
             .await?;
@@ -529,7 +531,7 @@ where
         })
     }
 
-    async fn budget_used(&self, provider: &ProviderId, day: NaiveDate) -> Result<u32> {
+    async fn budget_used(&self, provider: &ProviderId, day: Date) -> Result<u32> {
         let used: Option<i64> =
             query_scalar::<D, _>("SELECT used FROM fetch_budget WHERE provider = ? AND day = ?")
                 .bind(&provider.0)
@@ -539,7 +541,7 @@ where
         Ok(u32::try_from(used.unwrap_or(0)).unwrap_or(u32::MAX))
     }
 
-    async fn budget_add(&self, provider: &ProviderId, day: NaiveDate, n: u32) -> Result<u32> {
+    async fn budget_add(&self, provider: &ProviderId, day: Date, n: u32) -> Result<u32> {
         // One statement does "insert the row, or add to it if it exists" and
         // hands back the new total, so concurrent callers cannot lose updates.
         let used: i64 = query_scalar::<D, _>(
@@ -559,8 +561,8 @@ where
         &self,
         provider: &ProviderId,
         lineup: &str,
-        window_start: DateTime<Utc>,
-        until: DateTime<Utc>,
+        window_start: Timestamp,
+        until: Timestamp,
     ) -> Result<()> {
         query::<D>(
             "INSERT INTO fetch_bad_windows (provider, lineup, window_start, bad_until) \
@@ -569,8 +571,8 @@ where
         )
         .bind(&provider.0)
         .bind(lineup)
-        .bind(window_start.timestamp())
-        .bind(until.timestamp())
+        .bind(window_start.as_second())
+        .bind(until.as_second())
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -580,8 +582,8 @@ where
         &self,
         provider: &ProviderId,
         lineup: &str,
-        window_start: DateTime<Utc>,
-        now: DateTime<Utc>,
+        window_start: Timestamp,
+        now: Timestamp,
     ) -> Result<bool> {
         let hit: Option<i64> = query_scalar::<D, _>(
             "SELECT bad_until FROM fetch_bad_windows \
@@ -589,8 +591,8 @@ where
         )
         .bind(&provider.0)
         .bind(lineup)
-        .bind(window_start.timestamp())
-        .bind(now.timestamp())
+        .bind(window_start.as_second())
+        .bind(now.as_second())
         .fetch_optional(&self.pool)
         .await?;
         Ok(hit.is_some())
@@ -600,8 +602,8 @@ where
         &self,
         provider: &ProviderId,
         lineup: &str,
-        window_start: DateTime<Utc>,
-        fetched_at: DateTime<Utc>,
+        window_start: Timestamp,
+        fetched_at: Timestamp,
         body: &[u8],
     ) -> Result<()> {
         query::<D>(
@@ -610,8 +612,8 @@ where
         )
         .bind(&provider.0)
         .bind(lineup)
-        .bind(window_start.timestamp())
-        .bind(fetched_at.timestamp())
+        .bind(window_start.as_second())
+        .bind(fetched_at.as_second())
         .bind(gzip(body)?)
         .execute(&self.pool)
         .await?;
@@ -622,9 +624,9 @@ where
         &self,
         provider: &ProviderId,
         lineup: &str,
-        window_start: DateTime<Utc>,
+        window_start: Timestamp,
         max_age: Duration,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<RawEntry>> {
         // Newest first; "id DESC" breaks ties between two rows fetched in the
         // same second (the later insert wins).
@@ -635,7 +637,7 @@ where
         )
         .bind(&provider.0)
         .bind(lineup)
-        .bind(window_start.timestamp())
+        .bind(window_start.as_second())
         .bind(cutoff_secs(now, max_age))
         .fetch_optional(&self.pool)
         .await?;
@@ -689,9 +691,9 @@ where
         )
         .bind(&provider.0)
         .bind(i64::from(state.consecutive_failures))
-        .bind(state.not_before.map(|t| t.timestamp()))
-        .bind(state.circuit_open_until.map(|t| t.timestamp()))
-        .bind(state.last_success.map(|t| t.timestamp()))
+        .bind(state.not_before.map(|t| t.as_second()))
+        .bind(state.circuit_open_until.map(|t| t.as_second()))
+        .bind(state.last_success.map(|t| t.as_second()))
         .bind(&state.last_error)
         .execute(&self.pool)
         .await?;
@@ -702,7 +704,7 @@ where
         &self,
         source_key: &str,
         channels: &[TunerChannel],
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         query::<D>("DELETE FROM tuner_channels WHERE source_key = ?")
@@ -714,7 +716,7 @@ where
              ON CONFLICT (source_key) DO UPDATE SET saved_at = excluded.saved_at",
         )
         .bind(source_key)
-        .bind(now.timestamp())
+        .bind(now.as_second())
         .execute(&mut *tx)
         .await?;
         for (position, c) in channels.iter().enumerate() {
@@ -736,7 +738,7 @@ where
     async fn load_tuner_channels(
         &self,
         source_key: &str,
-    ) -> Result<Option<(Vec<TunerChannel>, DateTime<Utc>)>> {
+    ) -> Result<Option<(Vec<TunerChannel>, Timestamp)>> {
         // Two reads, so a snapshot is not guaranteed across them; that is
         // fine because saves replace the list in one transaction and the
         // header row is read first.
@@ -799,7 +801,7 @@ where
         .bind(&row.channel.0)
         .bind(row.ema)
         .bind(i64::from(row.samples))
-        .bind(row.updated_at.timestamp())
+        .bind(row.updated_at.as_second())
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -809,7 +811,7 @@ where
         &self,
         provider: &ProviderId,
         success: bool,
-        at: DateTime<Utc>,
+        at: Timestamp,
     ) -> Result<()> {
         // One statement, so concurrent callers cannot lose a count. "rolled"
         // below means: the stored window began RELIABILITY_WINDOW or more
@@ -834,7 +836,7 @@ where
         )
         .bind(&provider.0)
         .bind(i64::from(success))
-        .bind(at.timestamp())
+        .bind(at.as_second())
         .bind(window)
         .bind(window)
         .bind(window)
@@ -875,7 +877,7 @@ where
             .bind(row.slot.0)
             .bind(&row.provider.0)
             .bind(&row.channel.0)
-            .bind(row.scored_at.timestamp())
+            .bind(row.scored_at.as_second())
             .bind(row.score)
             .bind(serde_json::to_string(&row.breakdown)?)
             .execute(&mut *tx)
@@ -885,11 +887,7 @@ where
         Ok(())
     }
 
-    async fn score_history_delete_older_than(
-        &self,
-        cutoff: DateTime<Utc>,
-        limit: u32,
-    ) -> Result<u64> {
+    async fn score_history_delete_older_than(&self, cutoff: Timestamp, limit: u32) -> Result<u64> {
         // "DELETE ... WHERE id IN (SELECT ... LIMIT n)" is the portable way to
         // delete at most n rows; ORDER BY makes it the OLDEST n. The index on
         // scored_at serves both the filter and the order.
@@ -897,7 +895,7 @@ where
             "DELETE FROM score_history WHERE id IN \
              (SELECT id FROM score_history WHERE scored_at < ? ORDER BY scored_at, id LIMIT ?)",
         )
-        .bind(cutoff.timestamp())
+        .bind(cutoff.as_second())
         .bind(i64::from(limit))
         .execute(&self.pool)
         .await?;
@@ -906,24 +904,20 @@ where
 
     // ---- Janitor (see src/janitor.rs). ----
 
-    async fn delete_raw_older_than(&self, cutoff: DateTime<Utc>, limit: u32) -> Result<u64> {
+    async fn delete_raw_older_than(&self, cutoff: Timestamp, limit: u32) -> Result<u64> {
         // Index raw_responses_fetched_at serves the filter and the order.
         let done = query::<D>(
             "DELETE FROM raw_responses WHERE id IN \
              (SELECT id FROM raw_responses WHERE fetched_at < ? ORDER BY fetched_at, id LIMIT ?)",
         )
-        .bind(cutoff.timestamp())
+        .bind(cutoff.as_second())
         .bind(i64::from(limit))
         .execute(&self.pool)
         .await?;
         Ok(D::rows_affected(&done))
     }
 
-    async fn delete_aired_slots_older_than(
-        &self,
-        cutoff: DateTime<Utc>,
-        limit: u32,
-    ) -> Result<u64> {
+    async fn delete_aired_slots_older_than(&self, cutoff: Timestamp, limit: u32) -> Result<u64> {
         // Only the slot rows are named here. Their observations disappear by
         // themselves: observations.slot_id is ON DELETE CASCADE and this
         // database enforces foreign keys on every connection (SQLite: set in sqlite.rs). Index
@@ -932,7 +926,7 @@ where
             "DELETE FROM slots WHERE id IN \
              (SELECT id FROM slots WHERE end_utc < ? ORDER BY end_utc, id LIMIT ?)",
         )
-        .bind(cutoff.timestamp())
+        .bind(cutoff.as_second())
         .bind(i64::from(limit))
         .execute(&self.pool)
         .await?;
@@ -941,7 +935,7 @@ where
 
     async fn images_clear_for_slots_older_than(
         &self,
-        cutoff: DateTime<Utc>,
+        cutoff: Timestamp,
         limit: u32,
     ) -> Result<u64> {
         // Rows that were already cleared no longer match "image_id IS NOT
@@ -951,7 +945,7 @@ where
              (SELECT id FROM slots WHERE image_id IS NOT NULL AND end_utc < ? \
               ORDER BY end_utc, id LIMIT ?)",
         )
-        .bind(cutoff.timestamp())
+        .bind(cutoff.as_second())
         .bind(i64::from(limit))
         .execute(&self.pool)
         .await?;
@@ -983,7 +977,7 @@ where
     async fn delete_state_older_than(
         &self,
         table: StateTable,
-        cutoff: DateTime<Utc>,
+        cutoff: Timestamp,
         limit: u32,
     ) -> Result<u64> {
         // These tables have composite primary keys, so "the rows to delete"
@@ -1011,13 +1005,13 @@ where
             StateTable::FetchBudget => (
                 "DELETE FROM fetch_budget WHERE (provider, day) IN \
                  (SELECT provider, day FROM fetch_budget WHERE day < ? ORDER BY day LIMIT ?)",
-                Some(day_key(cutoff.date_naive())),
+                Some(day_key(cutoff.to_zoned_datetime(TimeZone::UTC).date())),
             ),
         };
         let q = query::<D>(sql);
         let q = match bind_text {
             Some(day) => q.bind(day),
-            None => q.bind(cutoff.timestamp()),
+            None => q.bind(cutoff.as_second()),
         };
         let done = q.bind(i64::from(limit)).execute(&self.pool).await?;
         Ok(D::rows_affected(&done))
@@ -1034,7 +1028,7 @@ where
         provider: &ProviderId,
         lineup: &str,
         channels: &[ProviderChannel],
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<()> {
         // One transaction: a response's channel list is stored whole or not
         // at all. Channels missing from this list are left alone.
@@ -1054,7 +1048,7 @@ where
             .bind(&c.number)
             .bind(&c.call_sign)
             .bind(&canonical_id(&c.call_sign).0)
-            .bind(now.timestamp())
+            .bind(now.as_second())
             .execute(&mut *tx)
             .await?;
         }
@@ -1090,7 +1084,7 @@ where
         &self,
         provider: &ProviderId,
         lineup: &str,
-        window_start: DateTime<Utc>,
+        window_start: Timestamp,
     ) -> Result<Option<WindowState>> {
         let row = query::<D>(
             "SELECT window_start, last_success, last_attempt, last_error FROM window_state \
@@ -1098,7 +1092,7 @@ where
         )
         .bind(&provider.0)
         .bind(lineup)
-        .bind(window_start.timestamp())
+        .bind(window_start.as_second())
         .fetch_optional(&self.pool)
         .await?;
         row.as_ref().map(window_state_from_row).transpose()
@@ -1120,9 +1114,9 @@ where
         )
         .bind(&provider.0)
         .bind(lineup)
-        .bind(state.window_start.timestamp())
-        .bind(state.last_success.map(|t| t.timestamp()))
-        .bind(state.last_attempt.timestamp())
+        .bind(state.window_start.as_second())
+        .bind(state.last_success.map(|t| t.as_second()))
+        .bind(state.last_attempt.as_second())
         .bind(state.last_failure.as_ref().map(WindowFailure::to_stored))
         .execute(&self.pool)
         .await?;
@@ -1133,8 +1127,8 @@ where
         &self,
         provider: &ProviderId,
         lineup: &str,
-        from: DateTime<Utc>,
-        to: DateTime<Utc>,
+        from: Timestamp,
+        to: Timestamp,
     ) -> Result<Vec<WindowState>> {
         let rows = query::<D>(
             "SELECT window_start, last_success, last_attempt, last_error FROM window_state \
@@ -1143,8 +1137,8 @@ where
         )
         .bind(&provider.0)
         .bind(lineup)
-        .bind(from.timestamp())
-        .bind(to.timestamp())
+        .bind(from.as_second())
+        .bind(to.as_second())
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(window_state_from_row).collect()

@@ -9,7 +9,6 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
-use chrono::{DateTime, Utc};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
@@ -139,8 +138,8 @@ fn non_blank(s: &Option<String>) -> Option<&str> {
 /// `None` when XMLTV cannot express the time: an instant outside jiff's
 /// range, a local year that does not fit in four digits, or an offset with
 /// seconds (local mean time before a zone adopted standard time).
-fn xmltv_time(t: DateTime<Utc>, tz: &TimeZone) -> Option<String> {
-    let instant = Timestamp::from_second(t.timestamp()).ok()?;
+fn xmltv_time(t: Timestamp, tz: &TimeZone) -> Option<String> {
+    let instant = Timestamp::from_second(t.as_second()).ok()?;
     let local = instant.to_zoned_datetime(tz.clone());
     if !(0..=9999).contains(&local.year()) {
         return None;

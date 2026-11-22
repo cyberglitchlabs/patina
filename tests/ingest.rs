@@ -10,11 +10,11 @@
 mod common;
 mod support;
 
+use jiff::SignedDuration;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use chrono::TimeDelta;
 use common::merge_util::{StubScorer, ch, obs, pid, t};
 use patina::channels::TunerChannel;
 use patina::channels::matching::{Overrides, match_channels};
@@ -444,7 +444,7 @@ async fn score_history_rows_name_the_inserted_and_updated_slots() {
 /// the new one. Each sample is `hindsight_sample(stored, new)`.
 #[tokio::test]
 async fn hindsight_samples_only_for_future_slots_listed_an_hour_earlier() {
-    assert_eq!(HINDSIGHT_MIN_AGE, TimeDelta::hours(1));
+    assert_eq!(HINDSIGHT_MIN_AGE, SignedDuration::from_hours(1));
     let store = store().await;
     let s = store.as_ref();
     let at = |fetched: i64, shift: i64| {
@@ -719,7 +719,7 @@ struct Step {
 /// Details depending on the start minute, so programmes differ in what
 /// they have.
 fn enrich(mut o: Observation) -> Observation {
-    let m = o.start.timestamp() / 60;
+    let m = o.start.as_second() / 60;
     let has = |d: i64| m.rem_euclid(d) != 0;
     if has(2) {
         o.description = Some(format!("{} ({})", o.title, o.provider.0));
@@ -792,7 +792,7 @@ fn history() -> impl Strategy<Value = Vec<Step>> {
     .prop_map(|mut steps| {
         for (n, s) in steps.iter_mut().enumerate() {
             for o in &mut s.incoming {
-                o.fetched_at += TimeDelta::hours(n as i64);
+                o.fetched_at += SignedDuration::from_hours(n as i64);
             }
         }
         steps
@@ -897,7 +897,7 @@ fn ingest_is_idempotent_and_a_thin_resend_never_loses_completeness() {
                         o.episode = None;
                         o.rating = None;
                         o.genres = Vec::new();
-                        o.fetched_at += TimeDelta::hours(1);
+                        o.fetched_at += SignedDuration::from_hours(1);
                         o
                     })
                     .collect();

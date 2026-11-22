@@ -2,6 +2,7 @@
 //! told to fail particular calls, to test how callers handle store errors.
 #![allow(dead_code)]
 
+use jiff::Timestamp;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -9,7 +10,6 @@ use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDate, Utc};
 use patina::channels::TunerChannel;
 use patina::merge::{MergeApplied, MergePlan, SlotWithObservations};
 use patina::model::{CanonicalChannel, ChannelId, MasterSlot, ProviderId};
@@ -110,7 +110,7 @@ impl Store for FailingStore {
         self.inner.ping().await
     }
 
-    async fn guide_stats(&self, now: DateTime<Utc>) -> Result<GuideStats> {
+    async fn guide_stats(&self, now: Timestamp) -> Result<GuideStats> {
         self.guide_stats_calls.fetch_add(1, Ordering::SeqCst);
         self.maybe_hang().await;
         if self.fail_stats.load(Ordering::SeqCst) {
@@ -135,8 +135,8 @@ impl Store for FailingStore {
     async fn slots(
         &self,
         channel: ChannelId,
-        from: DateTime<Utc>,
-        to: DateTime<Utc>,
+        from: Timestamp,
+        to: Timestamp,
     ) -> Result<Vec<MasterSlot>> {
         self.inner.slots(channel, from, to).await
     }
@@ -144,8 +144,8 @@ impl Store for FailingStore {
     async fn slots_with_observations(
         &self,
         channel: &ChannelId,
-        from: DateTime<Utc>,
-        to: DateTime<Utc>,
+        from: Timestamp,
+        to: Timestamp,
     ) -> Result<Vec<SlotWithObservations>> {
         self.inner.slots_with_observations(channel, from, to).await
     }
@@ -158,12 +158,17 @@ impl Store for FailingStore {
         self.inner.apply_merge(plan).await
     }
 
-    async fn budget_used(&self, provider: &ProviderId, day: NaiveDate) -> Result<u32> {
+    async fn budget_used(&self, provider: &ProviderId, day: jiff::civil::Date) -> Result<u32> {
         self.maybe_hang().await;
         self.inner.budget_used(provider, day).await
     }
 
-    async fn budget_add(&self, provider: &ProviderId, day: NaiveDate, n: u32) -> Result<u32> {
+    async fn budget_add(
+        &self,
+        provider: &ProviderId,
+        day: jiff::civil::Date,
+        n: u32,
+    ) -> Result<u32> {
         self.inner.budget_add(provider, day, n).await
     }
 
@@ -171,8 +176,8 @@ impl Store for FailingStore {
         &self,
         provider: &ProviderId,
         lineup: &str,
-        window_start: DateTime<Utc>,
-        until: DateTime<Utc>,
+        window_start: Timestamp,
+        until: Timestamp,
     ) -> Result<()> {
         self.inner
             .bad_window_mark(provider, lineup, window_start, until)
@@ -183,8 +188,8 @@ impl Store for FailingStore {
         &self,
         provider: &ProviderId,
         lineup: &str,
-        window_start: DateTime<Utc>,
-        now: DateTime<Utc>,
+        window_start: Timestamp,
+        now: Timestamp,
     ) -> Result<bool> {
         if self.fail_bad_window_check.load(Ordering::SeqCst) {
             anyhow::bail!("injected bad_window_is_bad failure");
@@ -198,8 +203,8 @@ impl Store for FailingStore {
         &self,
         provider: &ProviderId,
         lineup: &str,
-        window_start: DateTime<Utc>,
-        fetched_at: DateTime<Utc>,
+        window_start: Timestamp,
+        fetched_at: Timestamp,
         body: &[u8],
     ) -> Result<()> {
         self.inner
@@ -211,9 +216,9 @@ impl Store for FailingStore {
         &self,
         provider: &ProviderId,
         lineup: &str,
-        window_start: DateTime<Utc>,
+        window_start: Timestamp,
         max_age: Duration,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<RawEntry>> {
         self.inner
             .raw_get_latest(provider, lineup, window_start, max_age, now)
@@ -237,7 +242,7 @@ impl Store for FailingStore {
         &self,
         source_key: &str,
         channels: &[TunerChannel],
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<()> {
         self.inner
             .save_tuner_channels(source_key, channels, now)
@@ -247,7 +252,7 @@ impl Store for FailingStore {
     async fn load_tuner_channels(
         &self,
         source_key: &str,
-    ) -> Result<Option<(Vec<TunerChannel>, DateTime<Utc>)>> {
+    ) -> Result<Option<(Vec<TunerChannel>, Timestamp)>> {
         self.inner.load_tuner_channels(source_key).await
     }
 
@@ -266,7 +271,7 @@ impl Store for FailingStore {
         &self,
         provider: &ProviderId,
         success: bool,
-        at: DateTime<Utc>,
+        at: Timestamp,
     ) -> Result<()> {
         self.inner
             .provider_reliability_record(provider, success, at)
@@ -282,11 +287,7 @@ impl Store for FailingStore {
         self.inner.score_history_append(rows).await
     }
 
-    async fn score_history_delete_older_than(
-        &self,
-        cutoff: DateTime<Utc>,
-        limit: u32,
-    ) -> Result<u64> {
+    async fn score_history_delete_older_than(&self, cutoff: Timestamp, limit: u32) -> Result<u64> {
         let r = self
             .inner
             .score_history_delete_older_than(cutoff, limit)
@@ -295,7 +296,7 @@ impl Store for FailingStore {
         r
     }
 
-    async fn delete_raw_older_than(&self, cutoff: DateTime<Utc>, limit: u32) -> Result<u64> {
+    async fn delete_raw_older_than(&self, cutoff: Timestamp, limit: u32) -> Result<u64> {
         if self.fail_raw_delete.load(Ordering::SeqCst) {
             // Looks like a driver error, so tests can check it never reaches
             // a report.
@@ -306,11 +307,7 @@ impl Store for FailingStore {
         r
     }
 
-    async fn delete_aired_slots_older_than(
-        &self,
-        cutoff: DateTime<Utc>,
-        limit: u32,
-    ) -> Result<u64> {
+    async fn delete_aired_slots_older_than(&self, cutoff: Timestamp, limit: u32) -> Result<u64> {
         let r = self
             .inner
             .delete_aired_slots_older_than(cutoff, limit)
@@ -324,7 +321,7 @@ impl Store for FailingStore {
 
     async fn images_clear_for_slots_older_than(
         &self,
-        cutoff: DateTime<Utc>,
+        cutoff: Timestamp,
         limit: u32,
     ) -> Result<u64> {
         let r = self
@@ -349,7 +346,7 @@ impl Store for FailingStore {
     async fn delete_state_older_than(
         &self,
         table: StateTable,
-        cutoff: DateTime<Utc>,
+        cutoff: Timestamp,
         limit: u32,
     ) -> Result<u64> {
         let r = self
@@ -369,7 +366,7 @@ impl Store for FailingStore {
         provider: &ProviderId,
         lineup: &str,
         channels: &[ProviderChannel],
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<()> {
         self.inner
             .provider_channels_upsert(provider, lineup, channels, now)
@@ -389,7 +386,7 @@ impl Store for FailingStore {
         &self,
         provider: &ProviderId,
         lineup: &str,
-        window_start: DateTime<Utc>,
+        window_start: Timestamp,
     ) -> Result<Option<WindowState>> {
         if self.fail_window_state_get.load(Ordering::SeqCst) {
             anyhow::bail!("injected window_state_get failure");
@@ -412,8 +409,8 @@ impl Store for FailingStore {
         &self,
         provider: &ProviderId,
         lineup: &str,
-        from: DateTime<Utc>,
-        to: DateTime<Utc>,
+        from: Timestamp,
+        to: Timestamp,
     ) -> Result<Vec<WindowState>> {
         self.inner
             .window_state_range(provider, lineup, from, to)

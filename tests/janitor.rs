@@ -11,11 +11,11 @@
 mod common;
 mod support;
 
+use jiff::{SignedDuration, Timestamp};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use chrono::{DateTime, NaiveDate, TimeDelta, TimeZone, Utc};
 use patina::clock::FakeClock;
 use patina::config::Retention;
 use patina::janitor::{Janitor, JanitorReport, ReportSink};
@@ -29,16 +29,19 @@ use sqlx::{Connection, SqliteConnection};
 use support::failing_store::FailingStore;
 use tokio_util::sync::CancellationToken;
 
-fn now() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 11, 1, 12, 0, 0).unwrap()
+fn now() -> Timestamp {
+    jiff::civil::datetime(2026, 11, 1, 12, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp()
 }
 
-fn ago(d: TimeDelta) -> DateTime<Utc> {
+fn ago(d: SignedDuration) -> Timestamp {
     now() - d
 }
 
-fn days(n: i64) -> TimeDelta {
-    TimeDelta::days(n)
+fn days(n: i64) -> SignedDuration {
+    SignedDuration::from_hours(24 * n)
 }
 
 fn pid(name: &str) -> ProviderId {
@@ -49,16 +52,16 @@ fn pid(name: &str) -> ProviderId {
 #[derive(Clone)]
 struct Seed {
     channel: &'static str,
-    start: DateTime<Utc>,
-    end: DateTime<Utc>,
+    start: Timestamp,
+    end: Timestamp,
     image: Option<String>,
 }
 
 /// A slot that ended `ended_ago` ago, one hour long, on channel C1.
-fn aired(ended_ago: TimeDelta, image: Option<&str>) -> Seed {
+fn aired(ended_ago: SignedDuration, image: Option<&str>) -> Seed {
     Seed {
         channel: "C1",
-        start: ago(ended_ago) - TimeDelta::hours(1),
+        start: ago(ended_ago) - SignedDuration::from_hours(1),
         end: ago(ended_ago),
         image: image.map(str::to_string),
     }
@@ -165,14 +168,14 @@ async fn add_slots_to(store: &Arc<dyn Store>, seeds: &[Seed]) {
     store.apply_merge(plan).await.unwrap();
 }
 
-async fn raw_at(store: &Arc<dyn Store>, fetched_at: DateTime<Utc>, body: &[u8]) {
+async fn raw_at(store: &Arc<dyn Store>, fetched_at: Timestamp, body: &[u8]) {
     store
         .raw_put(&pid("gracenote"), "ota", fetched_at, fetched_at, body)
         .await
         .unwrap();
 }
 
-async fn history_at(store: &Arc<dyn Store>, scored_at: DateTime<Utc>) {
+async fn history_at(store: &Arc<dyn Store>, scored_at: Timestamp) {
     store
         .score_history_append(&[ScoreHistoryRow {
             slot: SlotId(1),
@@ -234,7 +237,7 @@ async fn aired_programmes_deleted_7_days_after_end() {
     assert_eq!(report.programmes_deleted, 1);
     assert_eq!(env.slot_count().await, 1);
     let left_end: i64 = env.count("SELECT end_utc FROM slots").await;
-    assert_eq!(left_end, ago(days(6)).timestamp());
+    assert_eq!(left_end, ago(days(6)).as_second());
 }
 
 #[tokio::test]
@@ -245,25 +248,25 @@ async fn future_and_recent_programmes_are_kept() {
         // On air right now.
         Seed {
             channel: "C1",
-            start: n - TimeDelta::minutes(30),
-            end: n + TimeDelta::minutes(30),
+            start: n - SignedDuration::from_mins(30),
+            end: n + SignedDuration::from_mins(30),
             image: None,
         },
         // Tomorrow, and next week.
         Seed {
             channel: "C1",
             start: n + days(1),
-            end: n + days(1) + TimeDelta::hours(1),
+            end: n + days(1) + SignedDuration::from_hours(1),
             image: None,
         },
         Seed {
             channel: "C1",
             start: n + days(7),
-            end: n + days(7) + TimeDelta::hours(1),
+            end: n + days(7) + SignedDuration::from_hours(1),
             image: None,
         },
         // Ended an hour ago, and two days ago.
-        aired(TimeDelta::hours(1), None),
+        aired(SignedDuration::from_hours(1), None),
         aired(days(2), None),
     ])
     .await;
@@ -326,7 +329,7 @@ async fn unreferenced_image_records_removed_immediately() {
     env.add_slots(&[Seed {
         channel: "C1",
         start: n + days(1),
-        end: n + days(1) + TimeDelta::hours(1),
+        end: n + days(1) + SignedDuration::from_hours(1),
         image: Some("https://img/live.jpg".into()),
     }])
     .await;
@@ -347,7 +350,7 @@ async fn disk_cap_evicts_oldest_first_until_under_cap() {
     for i in 0..10 {
         raw_at(
             &env.store,
-            ago(TimeDelta::hours(100 - i)),
+            ago(SignedDuration::from_hours(100 - i)),
             &noise(50_000, i as u64 + 1),
         )
         .await;
@@ -359,7 +362,7 @@ async fn disk_cap_evicts_oldest_first_until_under_cap() {
         Seed {
             channel: "C1",
             start: n + days(1),
-            end: n + days(1) + TimeDelta::hours(1),
+            end: n + days(1) + SignedDuration::from_hours(1),
             image: None,
         },
     ])
@@ -387,7 +390,7 @@ async fn disk_cap_evicts_oldest_first_until_under_cap() {
     let evicted = report.disk_evicted as i64;
     assert_eq!(
         oldest_left,
-        ago(TimeDelta::hours(100 - evicted)).timestamp(),
+        ago(SignedDuration::from_hours(100 - evicted)).as_second(),
         "exactly the {evicted} oldest were evicted"
     );
     // Slots were not needed.
@@ -403,8 +406,8 @@ async fn disk_cap_falls_back_to_history_then_aired_slots_and_warns_when_unreacha
         aired(days(1), None),
         Seed {
             channel: "C1",
-            start: n - TimeDelta::minutes(10),
-            end: n + TimeDelta::minutes(50),
+            start: n - SignedDuration::from_mins(10),
+            end: n + SignedDuration::from_mins(50),
             image: None,
         },
     ])
@@ -417,7 +420,7 @@ async fn disk_cap_falls_back_to_history_then_aired_slots_and_warns_when_unreacha
     assert_eq!(env.count("SELECT COUNT(*) FROM score_history").await, 0);
     assert_eq!(env.slot_count().await, 1);
     let left_end: i64 = env.count("SELECT end_utc FROM slots").await;
-    assert_eq!(left_end, (n + TimeDelta::minutes(50)).timestamp());
+    assert_eq!(left_end, (n + SignedDuration::from_mins(50)).as_second());
 }
 
 #[tokio::test]
@@ -427,10 +430,10 @@ async fn disk_eviction_keeps_aired_slots_the_feed_still_serves() {
     let env = Env::new().await;
     let lookback = patina::feeds::LOOKBACK;
     env.add_slots(&[
-        aired(days(1), None),                          // evictable
-        aired(lookback + TimeDelta::minutes(1), None), // evictable
-        aired(TimeDelta::hours(1), None),              // in the feed
-        aired(lookback - TimeDelta::minutes(1), None), // in the feed
+        aired(days(1), None),                                 // evictable
+        aired(lookback + SignedDuration::from_mins(1), None), // evictable
+        aired(SignedDuration::from_hours(1), None),           // in the feed
+        aired(lookback - SignedDuration::from_mins(1), None), // in the feed
     ])
     .await;
     let report = env.janitor(Retention::default(), Some(1)).run_once().await;
@@ -439,7 +442,7 @@ async fn disk_eviction_keeps_aired_slots_the_feed_still_serves() {
     let oldest_end: i64 = env.count("SELECT MIN(end_utc) FROM slots").await;
     assert_eq!(
         oldest_end,
-        ago(lookback - TimeDelta::minutes(1)).timestamp()
+        ago(lookback - SignedDuration::from_mins(1)).as_second()
     );
 }
 
@@ -450,10 +453,20 @@ async fn report_counts_match_rows_deleted() {
     let env = Env::new().await;
     // raw: 3 old, 2 kept.
     for i in 0..3 {
-        raw_at(&env.store, ago(days(8) + TimeDelta::hours(i)), b"x").await;
+        raw_at(
+            &env.store,
+            ago(days(8) + SignedDuration::from_hours(i)),
+            b"x",
+        )
+        .await;
     }
     for i in 0..2 {
-        raw_at(&env.store, ago(days(1) + TimeDelta::hours(i)), b"x").await;
+        raw_at(
+            &env.store,
+            ago(days(1) + SignedDuration::from_hours(i)),
+            b"x",
+        )
+        .await;
     }
     // programmes: 4 old (2 with images), 1 recent with an image.
     env.add_slots(&[
@@ -471,7 +484,7 @@ async fn report_counts_match_rows_deleted() {
     // state: 2 old window_state rows, 1 current.
     for (h, label) in [(-72i64, "old"), (-48, "old"), (0, "now")] {
         let _ = label;
-        let w = ago(days(1)) + TimeDelta::hours(h);
+        let w = ago(days(1)) + SignedDuration::from_hours(h);
         env.store
             .window_state_put(
                 &pid("gracenote"),
@@ -578,7 +591,7 @@ async fn retention_boundaries_are_exact() {
     // Rule: delete when STRICTLY older than the cutoff (now - retention).
     // A row exactly at the cutoff stays; one second older goes.
     let env = Env::new().await;
-    let one_s = TimeDelta::seconds(1);
+    let one_s = SignedDuration::from_secs(1);
     // raw
     raw_at(&env.store, ago(days(7)), b"edge").await;
     raw_at(&env.store, ago(days(7) + one_s), b"over").await;
@@ -598,9 +611,9 @@ async fn retention_boundaries_are_exact() {
     assert_eq!(report.history_deleted, 1);
     assert_eq!(report.programmes_deleted, 1);
     let left: i64 = env.count("SELECT end_utc FROM slots").await;
-    assert_eq!(left, ago(days(7)).timestamp());
+    assert_eq!(left, ago(days(7)).as_second());
     let left_raw: i64 = env.count("SELECT fetched_at FROM raw_responses").await;
-    assert_eq!(left_raw, ago(days(7)).timestamp());
+    assert_eq!(left_raw, ago(days(7)).as_second());
 
     // Image links: a slot that ended exactly 3 days ago keeps its link.
     let env = Env::new().await;
@@ -631,11 +644,11 @@ async fn retention_boundaries_are_exact() {
         history_days: 0,
     };
     env.add_slots(&[
-        aired(TimeDelta::zero(), None),
+        aired(SignedDuration::ZERO, None),
         aired(one_s, None),
         Seed {
             channel: "C1",
-            start: n - TimeDelta::minutes(5),
+            start: n - SignedDuration::from_mins(5),
             end: n + one_s,
             image: None,
         },
@@ -694,7 +707,7 @@ async fn observations_of_deleted_slots_are_gone_and_score_history_outlives_them(
 #[tokio::test]
 async fn window_state_and_provider_channels_are_pruned() {
     let env = Env::new().await;
-    let ws = |start: DateTime<Utc>| WindowState {
+    let ws = |start: Timestamp| WindowState {
         window_start: start,
         last_success: Some(start),
         last_attempt: start,
@@ -777,20 +790,24 @@ async fn expired_bad_windows_are_pruned_but_budget_of_today_is_kept() {
     let w = ago(days(1));
     // One bad-window memory expired an hour ago, one still in force.
     env.store
-        .bad_window_mark(&gn, "ota", w, now() - TimeDelta::hours(1))
+        .bad_window_mark(&gn, "ota", w, now() - SignedDuration::from_hours(1))
         .await
         .unwrap();
     env.store
         .bad_window_mark(
             &gn,
             "ota",
-            w + TimeDelta::hours(6),
-            now() + TimeDelta::hours(1),
+            w + SignedDuration::from_hours(6),
+            now() + SignedDuration::from_hours(1),
         )
         .await
         .unwrap();
     // Budget rows: today, yesterday, 3 days ago (kept), 4 and 10 days ago (gone).
-    let day = |back: i64| -> NaiveDate { (now() - days(back)).date_naive() };
+    let day = |back: i64| -> jiff::civil::Date {
+        (now() - days(back))
+            .to_zoned_datetime(jiff::tz::TimeZone::UTC)
+            .date()
+    };
     for back in [0, 1, 3, 4, 10] {
         env.store.budget_add(&gn, day(back), 7).await.unwrap();
     }
@@ -800,7 +817,7 @@ async fn expired_bad_windows_are_pruned_but_budget_of_today_is_kept() {
     assert_eq!(env.count("SELECT COUNT(*) FROM fetch_bad_windows").await, 1);
     assert!(
         env.store
-            .bad_window_is_bad(&gn, "ota", w + TimeDelta::hours(6), now())
+            .bad_window_is_bad(&gn, "ota", w + SignedDuration::from_hours(6), now())
             .await
             .unwrap()
     );
@@ -821,8 +838,8 @@ async fn deletes_happen_in_chunks() {
     let seeds: Vec<Seed> = (0..5000)
         .map(|i| Seed {
             channel: "C1",
-            start: base + TimeDelta::minutes(i),
-            end: base + TimeDelta::minutes(i + 1),
+            start: base + SignedDuration::from_mins(i),
+            end: base + SignedDuration::from_mins(i + 1),
             image: None,
         })
         .collect();
@@ -863,8 +880,8 @@ async fn cancellation_stops_between_chunks() {
     let seeds: Vec<Seed> = (0..60)
         .map(|i| Seed {
             channel: "C1",
-            start: base + TimeDelta::minutes(i),
-            end: base + TimeDelta::minutes(i + 1),
+            start: base + SignedDuration::from_mins(i),
+            end: base + SignedDuration::from_mins(i + 1),
             image: None,
         })
         .collect();
@@ -982,20 +999,20 @@ proptest! {
                 }
                 seeds.push(Seed {
                     channel: "C1",
-                    start: now() + TimeDelta::minutes(*start_min),
-                    end: now() + TimeDelta::minutes(start_min + len),
+                    start: now() + SignedDuration::from_mins(*start_min),
+                    end: now() + SignedDuration::from_mins(start_min + len),
                     image: with_image.then(|| format!("https://img/{i}.jpg")),
                 });
             }
             add_slots_to(&store, &seeds).await;
             for (i, h) in case.raw_ages_hours.iter().enumerate() {
-                raw_at(&store, now() - TimeDelta::hours(*h), &noise(2000, i as u64 + 1)).await;
+                raw_at(&store, now() - SignedDuration::from_hours(*h), &noise(2000, i as u64 + 1)).await;
             }
             let future_before: Vec<i64> = {
                 let mut v: Vec<i64> = seeds
                     .iter()
                     .filter(|s| s.end > now())
-                    .map(|s| s.start.timestamp())
+                    .map(|s| s.start.as_second())
                     .collect();
                 v.sort();
                 v
@@ -1018,7 +1035,7 @@ proptest! {
             let mut future_after: Vec<i64> = left
                 .iter()
                 .filter(|s| s.end > now())
-                .map(|s| s.start.timestamp())
+                .map(|s| s.start.as_second())
                 .collect();
             future_after.sort();
             assert_eq!(future_before, future_after, "a slot with end > now was deleted");
@@ -1034,14 +1051,14 @@ async fn tiny_cap_and_zero_retention_keep_current_and_future_slots() {
         aired(days(1), Some("https://img/a.jpg")),
         Seed {
             channel: "C1",
-            start: n - TimeDelta::minutes(1),
-            end: n + TimeDelta::minutes(1),
+            start: n - SignedDuration::from_mins(1),
+            end: n + SignedDuration::from_mins(1),
             image: Some("https://img/b.jpg".into()),
         },
         Seed {
             channel: "C1",
             start: n + days(2),
-            end: n + days(2) + TimeDelta::hours(1),
+            end: n + days(2) + SignedDuration::from_hours(1),
             image: Some("https://img/c.jpg".into()),
         },
     ])

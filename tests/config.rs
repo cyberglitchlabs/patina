@@ -1,3 +1,4 @@
+use jiff::Timestamp;
 use std::collections::HashMap;
 
 use patina::config::{Config, ConfigError, SourceKind};
@@ -395,13 +396,15 @@ fn horizon_days_1_and_14_are_accepted_via_env_and_toml() {
 
 #[test]
 fn horizon_arithmetic_never_panics_for_any_value() {
-    use chrono::{TimeZone, Utc};
     use patina::scheduler::horizon_windows;
-    let now = Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap();
+    let now = jiff::civil::datetime(2026, 11, 1, 0, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
     // 14 days of 6-hour windows, plus the one containing now.
     assert_eq!(horizon_windows(now, 14).len(), 56);
     // Values the config would reject still cannot panic or run away.
     assert!(horizon_windows(now, u32::MAX).len() <= 57);
     assert!(horizon_windows(now, 4_000_000_000).len() <= 57);
-    assert!(horizon_windows(chrono::DateTime::<Utc>::MAX_UTC, 7).len() <= 57);
+    assert!(horizon_windows(Timestamp::MAX, 7).len() <= 57);
 }

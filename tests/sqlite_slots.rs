@@ -2,6 +2,7 @@
 //! file. Slot read-back (range filter, mapping, image join) is in the shared
 //! store contract (tests/common/mod.rs), which writes through `apply_merge`.
 
+use jiff::SignedDuration;
 use patina::store::connect;
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{Connection, SqliteConnection};
@@ -55,7 +56,6 @@ async fn observation_rows_are_unique_per_slot_and_provider() {
 /// above all not as `MergeFailed` (which would delay the window's refresh).
 #[tokio::test]
 async fn window_state_with_unknown_error_text_reads_as_a_generic_failure() {
-    use chrono::{TimeZone, Utc};
     use patina::model::ProviderId;
     use patina::store::WindowFailure;
 
@@ -67,7 +67,10 @@ async fn window_state_with_unknown_error_text_reads_as_a_generic_failure() {
     let mut conn = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&path))
         .await
         .unwrap();
-    let w = Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap();
+    let w = jiff::civil::datetime(2026, 11, 1, 0, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
     for (i, text) in [
         "storing the merge failed", // the old English sentinel
         "HTTP 400 (bad window)",
@@ -77,13 +80,13 @@ async fn window_state_with_unknown_error_text_reads_as_a_generic_failure() {
     .into_iter()
     .enumerate()
     {
-        let start = w + chrono::TimeDelta::hours(6 * i as i64);
+        let start = w + SignedDuration::from_hours(6 * i as i64);
         sqlx::query(
             "INSERT INTO window_state (provider, lineup, window_start, last_success, last_attempt, last_error) \
              VALUES ('gn', 'ota', ?, NULL, ?, ?)",
         )
-        .bind(start.timestamp())
-        .bind(start.timestamp())
+        .bind(start.as_second())
+        .bind(start.as_second())
         .bind(text)
         .execute(&mut conn)
         .await

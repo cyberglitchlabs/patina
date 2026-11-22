@@ -8,12 +8,12 @@
 //! password. Error texts shown for the database are generic on purpose (the
 //! real error is logged), because driver errors can echo connection details.
 
+use jiff::Timestamp;
 use std::collections::{BTreeMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
@@ -108,7 +108,7 @@ pub struct QualityStatus {
     pub gap_fraction: f64,
     pub overlap_fraction: f64,
     pub observed_minutes: f64,
-    pub at: DateTime<Utc>,
+    pub at: Timestamp,
 }
 
 /// A lineup left alone after repeated HTTP 400s (see
@@ -117,7 +117,7 @@ pub struct QualityStatus {
 #[derive(Debug, Serialize)]
 pub struct LineupHoldStatus {
     pub lineup: String,
-    pub until: DateTime<Utc>,
+    pub until: Timestamp,
 }
 
 #[derive(Debug, Serialize)]
@@ -125,7 +125,7 @@ pub struct ProviderStatus {
     pub name: String,
     pub circuit: String,
     pub budget: BudgetStatus,
-    pub last_success: Option<DateTime<Utc>>,
+    pub last_success: Option<Timestamp>,
     pub last_error: Option<String>,
     pub consecutive_failures: u32,
     /// Share of recent counted fetches that were good, 0..1.
@@ -143,14 +143,14 @@ pub struct SourceStatus {
     pub channels_total: usize,
     pub channels_matched: usize,
     pub stale: bool,
-    pub loaded_at: Option<DateTime<Utc>>,
+    pub loaded_at: Option<Timestamp>,
     pub error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct GuideStatus {
     pub horizon_hours: f64,
-    pub newest_slot_end: Option<DateTime<Utc>>,
+    pub newest_slot_end: Option<Timestamp>,
     pub channels_with_data: u64,
     pub coverage_pct: f64,
     pub slots_total: u64,
@@ -158,7 +158,7 @@ pub struct GuideStatus {
 
 #[derive(Debug, Serialize)]
 pub struct SchedulerSection {
-    pub last_tick_at: Option<DateTime<Utc>>,
+    pub last_tick_at: Option<Timestamp>,
     pub last_tick: Option<TickSummary>,
 }
 
@@ -232,14 +232,14 @@ pub struct AdminDeps {
 }
 
 /// When the guide figures were computed, and the result (`None` = failed).
-type CachedFigures = (DateTime<Utc>, Option<Arc<GuideFigures>>);
+type CachedFigures = (Timestamp, Option<Arc<GuideFigures>>);
 
 pub struct Admin {
     deps: AdminDeps,
     /// Where the janitor publishes its latest report; `None` when no janitor
     /// is wired in (then `janitor` stays null).
     janitor: Option<ReportSink>,
-    started_at: DateTime<Utc>,
+    started_at: Timestamp,
     /// The last computed guide figures and when (`None` inside = the
     /// computation failed; failures are reused for the TTL too, so a dead
     /// database is not retried by every scrape). The async mutex is held
@@ -275,10 +275,10 @@ impl GuideFigures {
     }
 
     /// Seconds from `now` to the newest slot end, never negative.
-    fn horizon_seconds(&self, now: DateTime<Utc>) -> f64 {
+    fn horizon_seconds(&self, now: Timestamp) -> f64 {
         self.stats
             .newest_slot_end
-            .map_or(0.0, |end| (end - now).num_seconds().max(0) as f64)
+            .map_or(0.0, |end| (end - now).as_secs().max(0) as f64)
     }
 }
 
@@ -327,15 +327,11 @@ impl Admin {
 
     /// The guide figures, from the cache when younger than
     /// [`ADMIN_STATS_TTL`], else computed under `deadline`.
-    async fn guide_figures(
-        &self,
-        now: DateTime<Utc>,
-        deadline: Instant,
-    ) -> Option<Arc<GuideFigures>> {
+    async fn guide_figures(&self, now: Timestamp, deadline: Instant) -> Option<Arc<GuideFigures>> {
         let mut cache = self.figures.lock().await;
         if let Some((at, figures)) = cache.as_ref()
             && now >= *at
-            && (now - *at).to_std().is_ok_and(|age| age < ADMIN_STATS_TTL)
+            && Duration::try_from(now - *at).is_ok_and(|age| age < ADMIN_STATS_TTL)
         {
             return figures.clone();
         }
@@ -359,7 +355,7 @@ impl Admin {
     pub async fn status(&self) -> Status {
         let deadline = Instant::now() + self.deps.store_timeout;
         let now = self.deps.clock.now();
-        let uptime = (now - self.started_at).num_seconds().max(0);
+        let uptime = (now - self.started_at).as_secs().max(0);
 
         let store = match self.within(deadline, "ping", self.deps.store.ping()).await {
             Some(()) => StoreStatus {
@@ -476,7 +472,7 @@ impl Admin {
     async fn provider_status(
         &self,
         id: &ProviderId,
-        now: DateTime<Utc>,
+        now: Timestamp,
         deadline: Instant,
         reliability: &BTreeMap<ProviderId, (u32, u32)>,
         snapshot: &crate::scheduler::StatusSnapshot,
@@ -501,7 +497,10 @@ impl Admin {
                 until: *until,
             })
             .collect();
-        let day = now.date_naive().format("%Y-%m-%d").to_string();
+        let day = now
+            .to_zoned_datetime(jiff::tz::TimeZone::UTC)
+            .date()
+            .to_string();
         let state = self
             .within(
                 deadline,

@@ -6,11 +6,10 @@
 //! one provider never overlap and each waiter sees the previous request's
 //! time.
 
+use jiff::{SignedDuration, Timestamp};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-
-use chrono::{DateTime, TimeDelta, Utc};
 
 /// A source of jitter samples in `[-1.0, 1.0]`. Swappable so tests can be
 /// deterministic.
@@ -62,7 +61,7 @@ pub(crate) struct Limiter {
     jitter_fraction: f64,
     jitter: Arc<dyn Jitter>,
     /// When the previous request to this provider was sent (in this process).
-    last_request: Option<DateTime<Utc>>,
+    last_request: Option<Timestamp>,
 }
 
 impl Limiter {
@@ -83,7 +82,7 @@ impl Limiter {
     /// The earliest time the next request may be sent, or `None` if it may
     /// go at once. Draws a new jitter sample each time it is called with a
     /// previous request on record.
-    pub(crate) fn next_allowed(&self) -> Option<DateTime<Utc>> {
+    pub(crate) fn next_allowed(&self) -> Option<Timestamp> {
         let last = self.last_request?;
         if self.min_interval.is_zero() {
             return None;
@@ -91,12 +90,12 @@ impl Limiter {
         let sample = self.jitter.sample().clamp(-1.0, 1.0);
         let factor = 1.0 + self.jitter_fraction * sample;
         let interval = self.min_interval.mul_f64(factor);
-        let interval = TimeDelta::from_std(interval).unwrap_or(TimeDelta::MAX);
-        last.checked_add_signed(interval)
+        let interval = SignedDuration::try_from(interval).unwrap_or(SignedDuration::MAX);
+        last.checked_add(interval).ok()
     }
 
     /// Record that a request is being sent now.
-    pub(crate) fn mark_sent(&mut self, at: DateTime<Utc>) {
+    pub(crate) fn mark_sent(&mut self, at: Timestamp) {
         self.last_request = Some(at);
     }
 }
@@ -104,11 +103,13 @@ impl Limiter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
 
     #[test]
     fn interval_follows_jitter_samples() {
-        let t = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let t = jiff::civil::datetime(2026, 1, 1, 0, 0, 0, 0)
+            .in_tz("UTC")
+            .unwrap()
+            .timestamp();
         let mut l = Limiter::new(
             Duration::from_secs(2),
             0.5,
@@ -116,8 +117,8 @@ mod tests {
         );
         assert_eq!(l.next_allowed(), None, "no previous request");
         l.mark_sent(t);
-        let gaps: Vec<i64> = (0..4)
-            .map(|_| (l.next_allowed().unwrap() - t).num_milliseconds())
+        let gaps: Vec<i128> = (0..4)
+            .map(|_| (l.next_allowed().unwrap() - t).as_millis())
             .collect();
         // The out-of-range sample 7.0 is clamped to 1.0.
         assert_eq!(gaps, [1000, 3000, 2000, 3000]);

@@ -19,6 +19,7 @@
 mod common;
 mod support;
 
+use jiff::{SignedDuration, Timestamp};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -30,7 +31,6 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use axum::routing::get;
 use bytes::Bytes;
-use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 use http_body_util::BodyExt;
 use patina::app::{App, AppDeps, build};
 use patina::clock::{Clock, FakeClock};
@@ -49,13 +49,19 @@ const TUNER_LINEUP: &[u8] = include_bytes!("fixtures/hdhomerun/lineup.json");
 const FEED_TOKEN: &str = "feed-token-for-e2e";
 const ADMIN_TOKEN: &str = "admin-token-for-e2e";
 
-fn now0() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 10, 31, 20, 0, 0).unwrap()
+fn now0() -> Timestamp {
+    jiff::civil::datetime(2026, 10, 31, 20, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp()
 }
 
 /// A round time shortly after the first tick; see the module comment.
-fn feed_time() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 10, 31, 20, 10, 0).unwrap()
+fn feed_time() -> Timestamp {
+    jiff::civil::datetime(2026, 10, 31, 20, 10, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp()
 }
 
 // ---------------------------------------------------------------------------
@@ -338,8 +344,14 @@ fn series(metrics: &str, name: &str, labels: &[&str]) -> Option<f64> {
 
 /// Every channel with every slot and its observations.
 async fn dump(store: &Arc<dyn Store>) -> Vec<(String, Vec<SlotWithObservations>)> {
-    let far_past = Utc.with_ymd_and_hms(2000, 1, 1, 0, 0, 0).unwrap();
-    let far_future = Utc.with_ymd_and_hms(2100, 1, 1, 0, 0, 0).unwrap();
+    let far_past = jiff::civil::datetime(2000, 1, 1, 0, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
+    let far_future = jiff::civil::datetime(2100, 1, 1, 0, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
     let mut out = Vec::new();
     for c in store.list_channels().await.unwrap() {
         let slots = store
@@ -354,8 +366,8 @@ async fn dump(store: &Arc<dyn Store>) -> Vec<(String, Vec<SlotWithObservations>)
 /// Slots that have not started yet at `now`, as comparable tuples.
 fn future_slots(
     d: &[(String, Vec<SlotWithObservations>)],
-    now: DateTime<Utc>,
-) -> Vec<(String, DateTime<Utc>, DateTime<Utc>, String)> {
+    now: Timestamp,
+) -> Vec<(String, Timestamp, Timestamp, String)> {
     let mut v = Vec::new();
     for (ch, slots) in d {
         for s in slots {
@@ -542,10 +554,10 @@ async fn full_stack_scenario(database_url: Option<String>) {
     assert_eq!(future_slots(&after, s.clock.now()), future_before);
     assert_every_slot_has_observations(&after);
     // Past the 30 s feed cache, so this really re-renders from the store.
-    s.clock.set(feed_time() + TimeDelta::seconds(31));
+    s.clock.set(feed_time() + SignedDuration::from_secs(31));
     let source2 = feed(&router, "hdhomerun-1").await;
     assert_eq!(source2.body, source.body, "feed unchanged by the janitor");
-    s.clock.set(feed_time() + TimeDelta::seconds(120));
+    s.clock.set(feed_time() + SignedDuration::from_secs(120));
     let st = status(&router).await;
     let j = &st["janitor"];
     assert!(j.is_object(), "{j}");
@@ -586,7 +598,7 @@ async fn e2e_provider_outage_midway_keeps_serving_previous_guide() {
     // lookback moves with the clock, so the comparison below renders at the
     // same instant `t` both times (and bumps the cache generation to force
     // a re-render from the store).
-    let t = now0() + TimeDelta::minutes(3 * 60 + 5); // 23:05 UTC, same UTC day
+    let t = now0() + SignedDuration::from_mins(3 * 60 + 5); // 23:05 UTC, same UTC day
     s.clock.set(t);
     let before = feed(&router, "hdhomerun-1").await;
     assert_eq!(before.status, StatusCode::OK);
@@ -675,7 +687,7 @@ async fn e2e_provider_outage_midway_keeps_serving_previous_guide() {
     // 01:05 UTC is a new budget day, so `used` now counts only the requests
     // sent from here on.
     let sent_before_recovery = s.fake.request_count();
-    s.clock.set(t + TimeDelta::hours(2));
+    s.clock.set(t + SignedDuration::from_hours(2));
     let r = s.app.scheduler.tick().await;
     assert!(r.fetched > 0, "{r:?}");
     let st = status(&router).await;
@@ -683,8 +695,11 @@ async fn e2e_provider_outage_midway_keeps_serving_previous_guide() {
     assert_eq!(p["circuit"], "closed");
     assert_eq!(p["consecutive_failures"], 0);
     // The last success is the recovery tick, after the outage began.
-    let last_success: DateTime<Utc> = p["last_success"].as_str().unwrap().parse().unwrap();
-    assert!(last_success >= t + TimeDelta::hours(2), "{last_success}");
+    let last_success: Timestamp = p["last_success"].as_str().unwrap().parse().unwrap();
+    assert!(
+        last_success >= t + SignedDuration::from_hours(2),
+        "{last_success}"
+    );
     assert_eq!(
         p["budget"]["used"],
         (s.fake.request_count() - sent_before_recovery) as u64
@@ -732,7 +747,7 @@ async fn e2e_restart_keeps_state() {
     // Budget survived the restart, and the feed is the same.
     let st = status(&app.router).await;
     assert_eq!(st["providers"][0]["budget"]["used"], requests as u64);
-    clock.set(feed_time() + TimeDelta::seconds(31));
+    clock.set(feed_time() + SignedDuration::from_secs(31));
     let second = feed(&app.router, "hdhomerun-1").await;
     assert_eq!(second.status, StatusCode::OK);
     assert_eq!(second.body, first.body);

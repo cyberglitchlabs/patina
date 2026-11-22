@@ -6,9 +6,9 @@
 
 mod common;
 
+use jiff::{SignedDuration, Timestamp};
 use std::collections::HashMap;
 
-use chrono::{DateTime, Utc};
 use common::merge_util::{Sim, StubScorer, ch, obs, pid, range, t};
 use patina::merge::{Coverage, Scorer, SlotView, same_slot};
 use patina::model::{Observation, ScoreBreakdown};
@@ -143,7 +143,7 @@ fn history(providers: &'static [&'static str]) -> impl Strategy<Value = Vec<Step
         .prop_map(|mut steps| {
             for (n, s) in steps.iter_mut().enumerate() {
                 for o in &mut s.incoming {
-                    o.fetched_at += chrono::TimeDelta::hours(n as i64);
+                    o.fetched_at += SignedDuration::from_hours(n as i64);
                 }
             }
             steps
@@ -163,10 +163,10 @@ impl Scorer for TimelineScorer {
     fn score(&self, v: &SlotView) -> (f64, ScoreBreakdown) {
         let c = &v.candidate;
         // Depends on the observation's own length only.
-        let sanity = ((c.end - c.start).num_minutes().clamp(0, 180)) as f64 / 180.0;
+        let sanity = ((c.end - c.start).as_mins().clamp(0, 180)) as f64 / 180.0;
         let stability = 1.0 / (1.0 + f64::from(v.changes));
-        let age = ((v.now - c.fetched_at).num_minutes().max(0) as f64 / 1440.0).min(1.0);
-        let seen = ((v.now - v.first_seen).num_minutes().max(0) as f64 / 1440.0).min(1.0);
+        let age = ((v.now - c.fetched_at).as_mins().max(0) as f64 / 1440.0).min(1.0);
+        let seen = ((v.now - v.first_seen).as_mins().max(0) as f64 / 1440.0).min(1.0);
         let base = if c.provider.0 == "a" { 0.3 } else { 0.2 };
         let mut b = ScoreBreakdown::default();
         b.0.insert("sanity".into(), sanity);
@@ -377,7 +377,7 @@ proptest! {
 // ---- The never-worse rule for partial responses (spec 8.4). ----
 
 /// Overlap test on minute ranges (true when they share any time).
-fn overlaps(a: &std::ops::Range<DateTime<Utc>>, b: &std::ops::Range<DateTime<Utc>>) -> bool {
+fn overlaps(a: &std::ops::Range<Timestamp>, b: &std::ops::Range<Timestamp>) -> bool {
     a.start < b.end && b.start < a.end
 }
 
@@ -516,7 +516,7 @@ fn every_removal_or_supersede_satisfies_all_contradiction_conditions() {
                     }
                     // Future slots j is the same slot as (by range, or by
                     // the provider's record of it), as the planner counts.
-                    let same_as = |jr: &std::ops::Range<DateTime<Utc>>| {
+                    let same_as = |jr: &std::ops::Range<Timestamp>| {
                         sim.slots
                             .iter()
                             .filter(|y| y.slot.end > now)
@@ -535,7 +535,7 @@ fn every_removal_or_supersede_satisfies_all_contradiction_conditions() {
                     // Merged into another slot: j is the same slot as ours
                     // and at least one other, and at most 3 in all (the cap:
                     // survivor + MAX_ABSORBED_SLOTS = 2).
-                    let merged_into_other = |jr: &std::ops::Range<DateTime<Utc>>| {
+                    let merged_into_other = |jr: &std::ops::Range<Timestamp>| {
                         let n = same_as(jr);
                         (2..=3).contains(&n)
                     };
@@ -580,7 +580,7 @@ fn every_removal_or_supersede_satisfies_all_contradiction_conditions() {
 /// Give an observation some details, which ones depending on its start
 /// minute, so different programmes have different gaps.
 fn enrich(mut o: Observation) -> Observation {
-    let m = o.start.timestamp() / 60;
+    let m = o.start.as_second() / 60;
     let has = |d: i64| m.rem_euclid(d) != 0;
     if has(2) {
         o.description = Some(format!("{} ({} {m})", o.title, o.provider.0));
@@ -646,7 +646,7 @@ fn thin_resend_check(
             o.episode = None;
             o.rating = None;
             o.genres = Vec::new();
-            o.fetched_at += chrono::TimeDelta::hours(1);
+            o.fetched_at += SignedDuration::from_hours(1);
             thin.push(o);
         }
     }

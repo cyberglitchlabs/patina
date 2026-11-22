@@ -33,26 +33,25 @@
 //! | Fresh answer | success, or failure if the timeline has too many gaps/overlaps | success, or `MergeFailed` if storing failed | reset |
 //! | Answer from the raw cache | nothing (counted when it was fetched) | as for a fresh answer | reset |
 
-use chrono::{DateTime, TimeDelta, Utc};
-
 use crate::fetch::{FetchOutcome, SkipReason};
 use crate::provider::{FetchError, ParsedWindow};
 use crate::score::TimelineReport;
 pub use crate::store::WindowFailure;
 use crate::store::WindowState;
+use jiff::{SignedDuration, Timestamp};
 
 /// Windows starting before `now + NEAR` are "near" and refresh more often.
-pub const NEAR: TimeDelta = TimeDelta::hours(24);
+pub const NEAR: SignedDuration = SignedDuration::from_hours(24);
 /// Refresh interval of near windows.
-pub const NEAR_REFRESH: TimeDelta = TimeDelta::hours(3);
+pub const NEAR_REFRESH: SignedDuration = SignedDuration::from_hours(3);
 /// Refresh interval of every later window.
-pub const FAR_REFRESH: TimeDelta = TimeDelta::hours(24);
+pub const FAR_REFRESH: SignedDuration = SignedDuration::from_hours(24);
 /// When a window's response arrived but storing the merge failed, wait at
 /// least this long (after the last attempt) before handling that window
 /// again. Without it the window would stay due and be re-ingested every
 /// tick (60 times an hour from the raw cache, then a real request whenever
 /// the cache expires), each time repeating the same failing work.
-pub const MERGE_RETRY_FLOOR: TimeDelta = TimeDelta::minutes(30);
+pub const MERGE_RETRY_FLOOR: SignedDuration = SignedDuration::from_mins(30);
 /// After this many HTTP 400 answers in a row for one lineup (within one
 /// tick), stop asking for that lineup's windows for `BAD_WINDOW_HOLD`. Each
 /// 400 costs a request from the budget; a provider rejecting window after
@@ -67,7 +66,7 @@ pub const BAD_WINDOW_STREAK_LIMIT: u32 = 3;
 /// With the hold a provider that rejects everything costs at most 3
 /// requests per hold. The circuit breaker cannot do this job: a 400 counts
 /// as an answer, not a failure.
-pub const BAD_WINDOW_HOLD: TimeDelta = TimeDelta::hours(6);
+pub const BAD_WINDOW_HOLD: SignedDuration = SignedDuration::from_hours(6);
 /// A response is counted as a reliability failure when more than this share
 /// of its timeline is gaps ...
 pub const MAX_GAP_FRACTION: f64 = 0.20;
@@ -90,11 +89,7 @@ pub const MAX_OVERLAP_FRACTION: f64 = 0.10;
 /// * A time in the future (the clock jumped back) counts as `now`, so the
 ///   window is not stale forever and not due at once either (the scheduler
 ///   also stores the corrected time, see [`clamp_future`]).
-pub fn is_due(
-    window_start: DateTime<Utc>,
-    now: DateTime<Utc>,
-    state: Option<&WindowState>,
-) -> bool {
+pub fn is_due(window_start: Timestamp, now: Timestamp, state: Option<&WindowState>) -> bool {
     let Some(state) = state else {
         return true; // never attempted
     };
@@ -119,7 +114,7 @@ pub fn is_due(
 /// or `None` when nothing lies in the future. The scheduler stores the
 /// corrected row: left alone, such a window would not be refreshed until
 /// the clock caught up, possibly days later.
-pub fn clamp_future(state: &WindowState, now: DateTime<Utc>) -> Option<WindowState> {
+pub fn clamp_future(state: &WindowState, now: Timestamp) -> Option<WindowState> {
     let future_success = state.last_success.is_some_and(|t| t > now);
     if !future_success && state.last_attempt <= now {
         return None;
@@ -248,7 +243,7 @@ pub struct LineupRun {
     pub streak: u32,
     /// The lineup is left alone until this time (exclusive: at `until` it
     /// may be asked again).
-    pub hold_until: Option<DateTime<Utc>>,
+    pub hold_until: Option<Timestamp>,
 }
 
 impl LineupRun {
@@ -256,16 +251,16 @@ impl LineupRun {
     /// be asked. A hold is never longer than `BAD_WINDOW_HOLD` from `now`:
     /// if the clock jumped backwards after the hold started, the stored end
     /// would otherwise lie further away than intended, so it is clamped.
-    pub fn held_until(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    pub fn held_until(&self, now: Timestamp) -> Option<Timestamp> {
         let until = self.hold_until.filter(|until| *until > now)?;
-        let longest = now.checked_add_signed(BAD_WINDOW_HOLD).unwrap_or(until);
+        let longest = now.checked_add(BAD_WINDOW_HOLD).unwrap_or(until);
         Some(until.min(longest))
     }
 
     /// The state to begin a new tick with: the streak counts 400s in a row
     /// within one tick only, so it starts at 0; the hold carries over until
     /// it ends (clamped as in [`held_until`](Self::held_until)).
-    pub fn start_tick(self, now: DateTime<Utc>) -> LineupRun {
+    pub fn start_tick(self, now: Timestamp) -> LineupRun {
         LineupRun {
             streak: 0,
             hold_until: self.held_until(now),
@@ -320,9 +315,9 @@ impl WindowWrite {
     /// window look stale and cost a request).
     pub fn row(
         &self,
-        window_start: DateTime<Utc>,
+        window_start: Timestamp,
         saved: SavedWindow<'_>,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Option<WindowState> {
         match self {
             WindowWrite::Nothing => None,
@@ -386,12 +381,12 @@ pub struct Decision {
     /// once and report it). While the hold lasts the scheduler skips the
     /// lineup's remaining windows (`LineupRun::held_until`), counting each
     /// as `Tally::Halted`.
-    pub hold_started: Option<DateTime<Utc>>,
+    pub hold_started: Option<Timestamp>,
 }
 
 /// Decide what one window attempt means. `lineup` is the lineup's state
 /// before the attempt; `now` is when the attempt finished.
-pub fn decide(lineup: LineupRun, attempt: &Attempt, now: DateTime<Utc>) -> Decision {
+pub fn decide(lineup: LineupRun, attempt: &Attempt, now: Timestamp) -> Decision {
     // Most outcomes end a run of 400s; set otherwise below.
     let reset = LineupRun {
         streak: 0,
@@ -432,7 +427,7 @@ pub fn decide(lineup: LineupRun, attempt: &Attempt, now: DateTime<Utc>) -> Decis
             let mut hold_until = lineup.hold_until;
             if streak >= BAD_WINDOW_STREAK_LIMIT {
                 // Saturate instead of panicking at the end of time.
-                let until = now.checked_add_signed(BAD_WINDOW_HOLD).unwrap_or(now);
+                let until = now.checked_add(BAD_WINDOW_HOLD).unwrap_or(now);
                 hold_until = Some(until);
                 hold_started = Some(until);
             }

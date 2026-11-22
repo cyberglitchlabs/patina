@@ -5,7 +5,9 @@
 //! crash in the middle of a request still counts.
 
 use anyhow::Result;
-use chrono::{DateTime, NaiveDate, Utc};
+use jiff::Timestamp;
+use jiff::civil::Date;
+use jiff::tz::TimeZone;
 
 use crate::model::ProviderId;
 use crate::store::Store;
@@ -26,8 +28,8 @@ impl Budget {
         self.limit
     }
 
-    fn day(now: DateTime<Utc>) -> NaiveDate {
-        now.date_naive()
+    fn day(now: Timestamp) -> Date {
+        now.to_zoned_datetime(TimeZone::UTC).date()
     }
 
     /// Requests already charged today.
@@ -35,7 +37,7 @@ impl Budget {
         self,
         store: &dyn Store,
         provider: &ProviderId,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<u32> {
         store.budget_used(provider, Self::day(now)).await
     }
@@ -45,7 +47,7 @@ impl Budget {
         self,
         store: &dyn Store,
         provider: &ProviderId,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool> {
         Ok(self.used(store, provider, now).await? >= self.limit)
     }
@@ -59,7 +61,7 @@ impl Budget {
         self,
         store: &dyn Store,
         provider: &ProviderId,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool> {
         Ok(store.budget_add(provider, Self::day(now), 1).await? <= self.limit)
     }

@@ -37,12 +37,12 @@
 //! One failing category is recorded in the report (generic text; the real
 //! error goes to the log) and the run goes on with the next one.
 
+use jiff::{SignedDuration, Timestamp};
 use std::future::Future;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
@@ -70,18 +70,18 @@ const MAX_CHUNKS_PER_CATEGORY: u32 = 100_000;
 const EVICT_STALL_LIMIT: u32 = 5;
 
 /// Window state older than this is never due again.
-const WINDOW_STATE_KEEP: TimeDelta = TimeDelta::days(1);
+const WINDOW_STATE_KEEP: SignedDuration = SignedDuration::from_hours(24);
 /// Provider channels not listed by the provider for this long are dropped.
-const PROVIDER_CHANNEL_KEEP: TimeDelta = TimeDelta::days(30);
+const PROVIDER_CHANNEL_KEEP: SignedDuration = SignedDuration::from_hours(24 * 30);
 /// Budget counters older than this are dropped. Today's and yesterday's are
 /// needed (the budget is per UTC day), so this is deliberately generous.
-const BUDGET_KEEP: TimeDelta = TimeDelta::days(3);
+const BUDGET_KEEP: SignedDuration = SignedDuration::from_hours(24 * 3);
 
 /// What one run did. Also what `/status` shows (see `to_status`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct JanitorReport {
-    pub started_at: DateTime<Utc>,
-    pub finished_at: DateTime<Utc>,
+    pub started_at: Timestamp,
+    pub finished_at: Timestamp,
     pub raw_deleted: u64,
     pub programmes_deleted: u64,
     /// `images` rows deleted.
@@ -105,7 +105,7 @@ pub struct JanitorReport {
 }
 
 impl JanitorReport {
-    fn new(at: DateTime<Utc>) -> Self {
+    fn new(at: Timestamp) -> Self {
         JanitorReport {
             started_at: at,
             finished_at: at,
@@ -127,7 +127,7 @@ impl JanitorReport {
     /// The `janitor` object of `/status`.
     pub fn to_status(&self) -> serde_json::Value {
         json!({
-            "last_run": self.finished_at.to_rfc3339_opts(SecondsFormat::Secs, true),
+            "last_run": self.finished_at.strftime("%Y-%m-%dT%H:%M:%SZ").to_string(),
             "deleted": {
                 "raw": self.raw_deleted,
                 "programmes": self.programmes_deleted,
@@ -262,12 +262,7 @@ impl Janitor {
     // ------------------------------------------------------------ passes
 
     /// Raw provider responses (kept for replay and debugging).
-    async fn pass_raw(
-        &self,
-        cancel: &CancellationToken,
-        now: DateTime<Utc>,
-        rep: &mut JanitorReport,
-    ) {
+    async fn pass_raw(&self, cancel: &CancellationToken, now: Timestamp, rep: &mut JanitorReport) {
         let cutoff = cutoff_days(now, self.retention.raw_days);
         let r = drain(
             cancel,
@@ -287,7 +282,7 @@ impl Janitor {
     async fn pass_programmes(
         &self,
         cancel: &CancellationToken,
-        now: DateTime<Utc>,
+        now: Timestamp,
         rep: &mut JanitorReport,
     ) {
         let cutoff = cutoff_days(now, self.retention.programmes_days);
@@ -312,7 +307,7 @@ impl Janitor {
     async fn pass_images(
         &self,
         cancel: &CancellationToken,
-        now: DateTime<Utc>,
+        now: Timestamp,
         rep: &mut JanitorReport,
     ) {
         let cutoff = cutoff_days(now, self.retention.images_days);
@@ -365,7 +360,7 @@ impl Janitor {
     async fn pass_history(
         &self,
         cancel: &CancellationToken,
-        now: DateTime<Utc>,
+        now: Timestamp,
         rep: &mut JanitorReport,
     ) {
         let cutoff = cutoff_days(now, self.retention.history_days);
@@ -388,7 +383,7 @@ impl Janitor {
     async fn pass_state(
         &self,
         cancel: &CancellationToken,
-        now: DateTime<Utc>,
+        now: Timestamp,
         rep: &mut JanitorReport,
     ) {
         let rules = [
@@ -434,12 +429,7 @@ impl Janitor {
     /// cap, when nothing evictable is left, after `MAX_EVICT_CHUNKS`, or when
     /// several chunks in a row did not shrink the database (PostgreSQL keeps
     /// freed space, so deleting more would only lose data for nothing).
-    async fn pass_disk(
-        &self,
-        cancel: &CancellationToken,
-        now: DateTime<Utc>,
-        rep: &mut JanitorReport,
-    ) {
+    async fn pass_disk(&self, cancel: &CancellationToken, now: Timestamp, rep: &mut JanitorReport) {
         let Some(cap) = self.disk_cap_bytes else {
             return;
         };
@@ -616,10 +606,10 @@ where
 
 /// `now - days`, never after `now`. Saturates for absurd day counts instead
 /// of overflowing.
-fn cutoff_days(now: DateTime<Utc>, days: u32) -> DateTime<Utc> {
-    TimeDelta::try_days(i64::from(days))
-        .and_then(|d| now.checked_sub_signed(d))
-        .unwrap_or(DateTime::<Utc>::MIN_UTC)
+fn cutoff_days(now: Timestamp, days: u32) -> Timestamp {
+    Some(SignedDuration::from_hours(24 * i64::from(days)))
+        .and_then(|d| now.checked_sub(d).ok())
+        .unwrap_or(Timestamp::MIN)
         .min(now)
 }
 
@@ -640,7 +630,6 @@ pub fn jittered(base: Duration, unit: f64) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
 
     #[test]
     fn jitter_stays_within_ten_percent() {
@@ -657,9 +646,15 @@ mod tests {
 
     #[test]
     fn cutoff_is_never_after_now_and_saturates() {
-        let now = Utc.with_ymd_and_hms(2026, 11, 1, 12, 0, 0).unwrap();
+        let now = jiff::civil::datetime(2026, 11, 1, 12, 0, 0, 0)
+            .in_tz("UTC")
+            .unwrap()
+            .timestamp();
         assert_eq!(cutoff_days(now, 0), now);
-        assert_eq!(cutoff_days(now, 7), now - TimeDelta::days(7));
+        assert_eq!(
+            cutoff_days(now, 7),
+            now - SignedDuration::from_hours(24 * 7)
+        );
         assert!(cutoff_days(now, u32::MAX) < now);
     }
 }

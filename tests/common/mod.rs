@@ -8,10 +8,10 @@
 pub mod merge_util;
 pub mod pg;
 
+use jiff::{SignedDuration, Timestamp};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{NaiveDate, TimeDelta, TimeZone, Utc};
 use patina::model::{CanonicalChannel, ChannelId, ProviderId};
 use patina::store::{ProviderFetchState, Store};
 
@@ -81,8 +81,14 @@ async fn upsert_channel_updates_name_not_id(store: &Arc<dyn Store>) {
 }
 
 async fn slots_empty_for_unknown_channel(store: &Arc<dyn Store>) {
-    let from = Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap();
-    let to = Utc.with_ymd_and_hms(2026, 11, 2, 0, 0, 0).unwrap();
+    let from = jiff::civil::datetime(2026, 11, 1, 0, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
+    let to = jiff::civil::datetime(2026, 11, 2, 0, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
     let slots = store
         .slots(ChannelId("nope".into()), from, to)
         .await
@@ -95,7 +101,7 @@ fn pid(name: &str) -> ProviderId {
 }
 
 async fn budget_add_is_atomic_under_concurrency(store: &Arc<dyn Store>) {
-    let day = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+    let day = jiff::civil::date(2026, 11, 1);
     assert_eq!(store.budget_used(&pid("gn"), day).await.unwrap(), 0);
 
     // 25 tasks each add 1 at the same time. If the add were "read, then
@@ -117,15 +123,18 @@ async fn budget_add_is_atomic_under_concurrency(store: &Arc<dyn Store>) {
 
     // n > 1, and counts are separate per provider and per day.
     assert_eq!(store.budget_add(&pid("gn"), day, 5).await.unwrap(), 30);
-    let next = day.succ_opt().unwrap();
+    let next = day.tomorrow().unwrap();
     assert_eq!(store.budget_used(&pid("gn"), next).await.unwrap(), 0);
     assert_eq!(store.budget_used(&pid("other"), day).await.unwrap(), 0);
 }
 
 async fn raw_cache_roundtrip_is_gzip_transparent(store: &Arc<dyn Store>) {
-    let w = Utc.with_ymd_and_hms(2026, 11, 1, 12, 0, 0).unwrap();
-    let t1 = w + TimeDelta::minutes(1);
-    let t2 = w + TimeDelta::minutes(30);
+    let w = jiff::civil::datetime(2026, 11, 1, 12, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
+    let t1 = w + SignedDuration::from_mins(1);
+    let t2 = w + SignedDuration::from_mins(30);
     let day = Duration::from_secs(86400);
     // Bytes that are not valid UTF-8, and a body large enough to compress.
     let mut big = b"{\"channels\":[".repeat(20_000);
@@ -155,7 +164,7 @@ async fn raw_cache_roundtrip_is_gzip_transparent(store: &Arc<dyn Store>) {
 
     // max_age: 10 minutes after t2, a 5 minute limit excludes everything,
     // and a 15 minute limit finds only the t2 copy.
-    let later = t2 + TimeDelta::minutes(10);
+    let later = t2 + SignedDuration::from_mins(10);
     let five = Duration::from_secs(300);
     assert!(
         store
@@ -173,7 +182,7 @@ async fn raw_cache_roundtrip_is_gzip_transparent(store: &Arc<dyn Store>) {
     assert_eq!(got.fetched_at, t2);
 
     // Keyed by provider, lineup and window.
-    let other = w + TimeDelta::hours(6);
+    let other = w + SignedDuration::from_hours(6);
     assert!(
         store
             .raw_get_latest(&pid("gn"), "ota", other, day, t2)
@@ -210,9 +219,12 @@ async fn raw_cache_roundtrip_is_gzip_transparent(store: &Arc<dyn Store>) {
 }
 
 async fn bad_window_roundtrip(store: &Arc<dyn Store>) {
-    let w = Utc.with_ymd_and_hms(2026, 11, 1, 18, 0, 0).unwrap();
-    let now = w - TimeDelta::hours(1);
-    let until = now + TimeDelta::hours(6);
+    let w = jiff::civil::datetime(2026, 11, 1, 18, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
+    let now = w - SignedDuration::from_hours(1);
+    let until = now + SignedDuration::from_hours(6);
     assert!(
         !store
             .bad_window_is_bad(&pid("gn"), "ota", w, now)
@@ -230,7 +242,7 @@ async fn bad_window_roundtrip(store: &Arc<dyn Store>) {
             .await
             .unwrap()
     );
-    let just_before = until - TimeDelta::seconds(1);
+    let just_before = until - SignedDuration::from_secs(1);
     assert!(
         store
             .bad_window_is_bad(&pid("gn"), "ota", w, just_before)
@@ -245,7 +257,7 @@ async fn bad_window_roundtrip(store: &Arc<dyn Store>) {
             .unwrap()
     );
     // Other windows, lineups and providers are unaffected.
-    let next = w + TimeDelta::hours(6);
+    let next = w + SignedDuration::from_hours(6);
     assert!(
         !store
             .bad_window_is_bad(&pid("gn"), "ota", next, now)
@@ -266,7 +278,7 @@ async fn bad_window_roundtrip(store: &Arc<dyn Store>) {
     );
 
     // Marking again replaces the expiry (here: extends it).
-    let later = until + TimeDelta::hours(6);
+    let later = until + SignedDuration::from_hours(6);
     store
         .bad_window_mark(&pid("gn"), "ota", w, later)
         .await
@@ -281,12 +293,15 @@ async fn bad_window_roundtrip(store: &Arc<dyn Store>) {
 
 async fn fetch_state_roundtrip(store: &Arc<dyn Store>) {
     assert_eq!(store.fetch_state_load(&pid("gn")).await.unwrap(), None);
-    let t = Utc.with_ymd_and_hms(2026, 11, 1, 12, 0, 0).unwrap();
+    let t = jiff::civil::datetime(2026, 11, 1, 12, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
     let full = ProviderFetchState {
         consecutive_failures: 7,
-        not_before: Some(t + TimeDelta::minutes(5)),
-        circuit_open_until: Some(t + TimeDelta::minutes(15)),
-        last_success: Some(t - TimeDelta::hours(2)),
+        not_before: Some(t + SignedDuration::from_mins(5)),
+        circuit_open_until: Some(t + SignedDuration::from_mins(15)),
+        last_success: Some(t - SignedDuration::from_hours(2)),
         last_error: Some("HTTP 503".into()),
     };
     store.fetch_state_save(&pid("gn"), &full).await.unwrap();
@@ -314,7 +329,10 @@ async fn tuner_channels_roundtrip_replace_and_empty(store: &Arc<dyn Store>) {
         number: n.into(),
         name: name.into(),
     };
-    let t = Utc.with_ymd_and_hms(2026, 11, 1, 12, 0, 0).unwrap();
+    let t = jiff::civil::datetime(2026, 11, 1, 12, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
 
     // Never saved is None.
     assert_eq!(store.load_tuner_channels("tuner").await.unwrap(), None);
@@ -328,7 +346,7 @@ async fn tuner_channels_roundtrip_replace_and_empty(store: &Arc<dyn Store>) {
     );
 
     // Saving again replaces the list rather than appending to it.
-    let t2 = t + TimeDelta::hours(1);
+    let t2 = t + SignedDuration::from_hours(1);
     let second = vec![tc("5.1", "KSTP")];
     store
         .save_tuner_channels("tuner", &second, t2)
@@ -343,7 +361,7 @@ async fn tuner_channels_roundtrip_replace_and_empty(store: &Arc<dyn Store>) {
     assert_eq!(store.load_tuner_channels("other").await.unwrap(), None);
 
     // An empty list is valid and distinct from never saved.
-    let t3 = t2 + TimeDelta::hours(1);
+    let t3 = t2 + SignedDuration::from_hours(1);
     store.save_tuner_channels("tuner", &[], t3).await.unwrap();
     assert_eq!(
         store.load_tuner_channels("tuner").await.unwrap(),
@@ -550,7 +568,10 @@ async fn accuracy_ema_roundtrip(store: &Arc<dyn Store>) {
     use patina::score::{AccuracySnapshot, next_accuracy_row};
     use patina::store::AccuracyRow;
 
-    let at = Utc.with_ymd_and_hms(2026, 11, 1, 12, 0, 0).unwrap();
+    let at = jiff::civil::datetime(2026, 11, 1, 12, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
     let wcco = ChannelId("WCCODT.us".into());
     let kare = ChannelId("KARE.us".into());
     assert!(store.provider_accuracy_load_all().await.unwrap().is_empty());
@@ -570,7 +591,7 @@ async fn accuracy_ema_roundtrip(store: &Arc<dyn Store>) {
     // Ordered by provider then channel: KARE before WCCO.
     assert_eq!(loaded, vec![other.clone(), first.clone()]);
 
-    let later = at + TimeDelta::hours(6);
+    let later = at + SignedDuration::from_hours(6);
     let second = next_accuracy_row(Some(&loaded[1]), &pid("gn"), &wcco, 1.0, later);
     store.provider_accuracy_upsert(&second).await.unwrap();
     let loaded = store.provider_accuracy_load_all().await.unwrap();
@@ -594,11 +615,14 @@ async fn reliability_counter_rolls_over(store: &Arc<dyn Store>) {
     use patina::score::signals::reliability;
     use patina::store::{RELIABILITY_WINDOW, ReliabilityRow};
 
-    let t0 = Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap();
+    let t0 = jiff::civil::datetime(2026, 11, 1, 0, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
     let p = pid("rel");
     for (i, ok) in [true, true, true, false].into_iter().enumerate() {
         store
-            .provider_reliability_record(&p, ok, t0 + TimeDelta::hours(i as i64))
+            .provider_reliability_record(&p, ok, t0 + SignedDuration::from_hours(i as i64))
             .await
             .unwrap();
     }
@@ -607,8 +631,8 @@ async fn reliability_counter_rolls_over(store: &Arc<dyn Store>) {
     assert_eq!((r.success, r.total, r.window_start), (3, 4, t0));
 
     // Just inside the window: still counting into the same window.
-    let window = TimeDelta::from_std(RELIABILITY_WINDOW).unwrap();
-    let inside = t0 + window - TimeDelta::seconds(1);
+    let window = SignedDuration::try_from(RELIABILITY_WINDOW).unwrap();
+    let inside = t0 + window - SignedDuration::from_secs(1);
     store
         .provider_reliability_record(&p, true, inside)
         .await
@@ -627,7 +651,7 @@ async fn reliability_counter_rolls_over(store: &Arc<dyn Store>) {
 
     // Concurrent records never lose a count (one atomic statement each).
     let q = pid("rel-concurrent");
-    let at = t0 + TimeDelta::hours(1);
+    let at = t0 + SignedDuration::from_hours(1);
     let tasks: Vec<_> = (0..10)
         .map(|i| {
             let store = store.clone();
@@ -657,7 +681,10 @@ async fn score_history_append_and_prune(store: &Arc<dyn Store>) {
     use patina::model::{ScoreBreakdown, SlotId};
     use patina::store::ScoreHistoryRow;
 
-    let t0 = Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).unwrap();
+    let t0 = jiff::civil::datetime(2026, 8, 1, 0, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
     let row = |days: i64, score: f64| {
         let mut b = ScoreBreakdown::default();
         b.0.insert("freshness".into(), score);
@@ -666,7 +693,7 @@ async fn score_history_append_and_prune(store: &Arc<dyn Store>) {
             slot: SlotId(42),
             provider: pid("gn"),
             channel: ChannelId("WCCODT.us".into()),
-            scored_at: t0 + TimeDelta::days(days),
+            scored_at: t0 + SignedDuration::from_hours(24 * days),
             score,
             breakdown: b,
         }
@@ -680,20 +707,20 @@ async fn score_history_append_and_prune(store: &Arc<dyn Store>) {
 
     // Strictly older than the cutoff: day 1 itself stays.
     let deleted = store
-        .score_history_delete_older_than(t0 + TimeDelta::days(1), 1000)
+        .score_history_delete_older_than(t0 + SignedDuration::from_hours(24), 1000)
         .await
         .unwrap();
     assert_eq!(deleted, 1);
     assert_eq!(
         store
-            .score_history_delete_older_than(t0 + TimeDelta::days(1), 1000)
+            .score_history_delete_older_than(t0 + SignedDuration::from_hours(24), 1000)
             .await
             .unwrap(),
         0,
         "pruning again deletes nothing"
     );
     let deleted = store
-        .score_history_delete_older_than(t0 + TimeDelta::days(365), 1000)
+        .score_history_delete_older_than(t0 + SignedDuration::from_hours(24 * 365), 1000)
         .await
         .unwrap();
     assert_eq!(deleted, 3, "the rest, appended in two batches");
@@ -708,7 +735,10 @@ fn pch(id: &str, number: &str, call_sign: &str) -> patina::provider::ProviderCha
 }
 
 async fn provider_channels_roundtrip(store: &Arc<dyn Store>) {
-    let t = Utc.with_ymd_and_hms(2026, 11, 1, 12, 0, 0).unwrap();
+    let t = jiff::civil::datetime(2026, 11, 1, 12, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
     let list = |p: &'static str, l: &'static str| {
         let store = store.clone();
         async move { store.provider_channels_list(&pid(p), l).await.unwrap() }
@@ -743,7 +773,7 @@ async fn provider_channels_roundtrip(store: &Arc<dyn Store>) {
             &pid("gn"),
             "ota",
             &[pch("100", "4.2", "WCCO"), pch("300", "5.6", "KSTCDT6")],
-            t + TimeDelta::hours(1),
+            t + SignedDuration::from_hours(1),
         )
         .await
         .unwrap();
@@ -759,8 +789,11 @@ async fn provider_channels_roundtrip(store: &Arc<dyn Store>) {
 
 async fn window_state_roundtrip(store: &Arc<dyn Store>) {
     use patina::store::{WindowFailure, WindowState};
-    let w0 = Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap();
-    let w = |h: i64| w0 + TimeDelta::hours(h);
+    let w0 = jiff::civil::datetime(2026, 11, 1, 0, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
+    let w = |h: i64| w0 + SignedDuration::from_hours(h);
     assert_eq!(
         store.window_state_get(&pid("gn"), "ota", w0).await.unwrap(),
         None
@@ -878,7 +911,10 @@ async fn store_ping_and_guide_stats(store: &Arc<dyn Store>) {
     // Use channels no earlier contract step has put slots on, and measure
     // against the stats from before, so the test does not depend on what
     // the other steps left in the store.
-    let now = Utc.with_ymd_and_hms(2031, 5, 1, 12, 0, 0).unwrap();
+    let now = jiff::civil::datetime(2031, 5, 1, 12, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
     let before = store.guide_stats(now).await.unwrap();
     store
         .upsert_channels(&[
@@ -891,8 +927,8 @@ async fn store_ping_and_guide_stats(store: &Arc<dyn Store>) {
     let slot = |ch: &str, start_min: i64, len_min: i64| NewSlot {
         channel: ChannelId(ch.into()),
         fields: SlotFields {
-            start: now + TimeDelta::minutes(start_min),
-            end: now + TimeDelta::minutes(start_min + len_min),
+            start: now + SignedDuration::from_mins(start_min),
+            end: now + SignedDuration::from_mins(start_min + len_min),
             title: "t".into(),
             subtitle: None,
             description: None,
@@ -922,7 +958,7 @@ async fn store_ping_and_guide_stats(store: &Arc<dyn Store>) {
     assert_eq!(after.future_slots_total, before.future_slots_total + 3);
     assert_eq!(
         after.newest_slot_end,
-        Some(now + TimeDelta::minutes(60 * 24 * 365 * 40 + 30))
+        Some(now + SignedDuration::from_mins(60 * 24 * 365 * 40 + 30))
     );
     let ours: Vec<&ChannelId> = after
         .future_channels
@@ -938,7 +974,7 @@ async fn store_ping_and_guide_stats(store: &Arc<dyn Store>) {
         after.future_channels.len()
     );
     // `now` later than everything: nothing is future any more.
-    let late = now + TimeDelta::minutes(60 * 24 * 365 * 41);
+    let late = now + SignedDuration::from_mins(60 * 24 * 365 * 41);
     let end = store.guide_stats(late).await.unwrap();
     assert_eq!(end.future_slots_total, 0);
     assert_eq!(end.channels_with_future_slots, 0);
@@ -951,17 +987,16 @@ async fn store_ping_and_guide_stats(store: &Arc<dyn Store>) {
 // anything the other contract steps store, and every cutoff lies inside that
 // month, so these deletes can only ever match the rows created here.
 
-fn jan(day: u32, hour: u32) -> chrono::DateTime<Utc> {
-    Utc.with_ymd_and_hms(2020, 1, day, hour, 0, 0).unwrap()
+fn jan(day: i8, hour: i8) -> Timestamp {
+    jiff::civil::datetime(2020, 1, day, hour, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp()
 }
 
 /// Insert one-hour slots on `channel` ending at the given instants; each has
 /// one observation and optionally an image.
-async fn jan_slots(
-    store: &Arc<dyn Store>,
-    channel: &str,
-    ends: &[(chrono::DateTime<Utc>, Option<&str>)],
-) {
+async fn jan_slots(store: &Arc<dyn Store>, channel: &str, ends: &[(Timestamp, Option<&str>)]) {
     use patina::merge::{MergePlan, NewSlot, ObservationWrite, SlotFields, SlotRef};
     use patina::model::{Observation, ScoreBreakdown};
 
@@ -976,7 +1011,7 @@ async fn jan_slots(
         .unwrap();
     let mut plan = MergePlan::empty(jan(1, 0));
     for (i, (end, image)) in ends.iter().enumerate() {
-        let start = *end - TimeDelta::hours(1);
+        let start = *end - SignedDuration::from_hours(1);
         plan.inserts.push(NewSlot {
             channel: ChannelId(channel.into()),
             fields: SlotFields {
@@ -1026,7 +1061,7 @@ async fn jan_channel_slots(
     store
         .slots_with_observations(
             &ChannelId(channel.into()),
-            jan(1, 0) - TimeDelta::days(30),
+            jan(1, 0) - SignedDuration::from_hours(24 * 30),
             jan(31, 0),
         )
         .await
@@ -1044,7 +1079,7 @@ async fn janitor_deletes_are_bounded_ordered_and_strict(store: &Arc<dyn Store>) 
             .await
             .unwrap();
     }
-    let present = |d: u32| {
+    let present = |d: i8| {
         let store = store.clone();
         async move {
             store
@@ -1070,11 +1105,14 @@ async fn janitor_deletes_are_bounded_ordered_and_strict(store: &Arc<dyn Store>) 
     assert!(present(5).await);
 
     // ---- score history ----
-    let row = |d: u32| patina::store::ScoreHistoryRow {
+    let row = |d: i8| patina::store::ScoreHistoryRow {
         slot: patina::model::SlotId(1),
         provider: pid("jan-h"),
         channel: ChannelId("JAN-H".into()),
-        scored_at: Utc.with_ymd_and_hms(2019, 12, d, 0, 0, 0).unwrap(),
+        scored_at: jiff::civil::datetime(2019, 12, d, 0, 0, 0, 0)
+            .in_tz("UTC")
+            .unwrap()
+            .timestamp(),
         score: 0.5,
         breakdown: patina::model::ScoreBreakdown::default(),
     };
@@ -1082,7 +1120,10 @@ async fn janitor_deletes_are_bounded_ordered_and_strict(store: &Arc<dyn Store>) 
         .score_history_append(&[row(1), row(2), row(3)])
         .await
         .unwrap();
-    let cut = Utc.with_ymd_and_hms(2019, 12, 31, 0, 0, 0).unwrap();
+    let cut = jiff::civil::datetime(2019, 12, 31, 0, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
     assert_eq!(
         store.score_history_delete_older_than(cut, 2).await.unwrap(),
         2
@@ -1300,7 +1341,7 @@ async fn janitor_state_tables_are_pruned_by_rule(store: &Arc<dyn Store>) {
     );
 
     // fetch_budget.day: the cutoff's UTC day; strictly earlier days go.
-    let day = |d: u32| NaiveDate::from_ymd_opt(2020, 1, d).unwrap();
+    let day = |d: i8| jiff::civil::date(2020, 1, d);
     for d in [8, 9, 10] {
         store.budget_add(&p, day(d), 4).await.unwrap();
     }
@@ -1521,14 +1562,17 @@ async fn season_and_episode_are_32_bit_on_every_backend(store: &Arc<dyn Store>) 
         }])
         .await
         .unwrap();
-    let now = Utc.with_ymd_and_hms(2026, 11, 1, 12, 0, 0).unwrap();
+    let now = jiff::civil::datetime(2026, 11, 1, 12, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
     let plan_with = |season: u32, episode: u32| {
         let mut plan = MergePlan::empty(now);
         plan.inserts.push(NewSlot {
             channel: chan.clone(),
             fields: SlotFields {
                 start: now,
-                end: now + TimeDelta::minutes(30),
+                end: now + SignedDuration::from_mins(30),
                 title: "t".into(),
                 subtitle: None,
                 description: None,
@@ -1553,7 +1597,11 @@ async fn season_and_episode_are_32_bit_on_every_backend(store: &Arc<dyn Store>) 
         .await
         .unwrap();
     let slots = store
-        .slots_with_observations(&chan, now - TimeDelta::hours(1), now + TimeDelta::hours(1))
+        .slots_with_observations(
+            &chan,
+            now - SignedDuration::from_hours(1),
+            now + SignedDuration::from_hours(1),
+        )
         .await
         .unwrap();
     assert_eq!(slots.len(), 1);

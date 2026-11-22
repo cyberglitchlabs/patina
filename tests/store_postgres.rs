@@ -7,7 +7,6 @@
 
 mod common;
 
-use chrono::{TimeZone, Utc};
 use common::pg::with_fresh_schema;
 use common::run_contract;
 use patina::store::connect;
@@ -60,7 +59,10 @@ async fn postgres_raw_bodies_are_stored_gzipped() {
     with_fresh_schema(|url| async move {
         let store = connect(&url).await.unwrap();
         let body = b"{\"channels\":[]}".repeat(1000);
-        let t = Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap();
+        let t = jiff::civil::datetime(2026, 11, 1, 0, 0, 0, 0)
+            .in_tz("UTC")
+            .unwrap()
+            .timestamp();
         store
             .raw_put(&patina::model::ProviderId("gn".into()), "ota", t, t, &body)
             .await

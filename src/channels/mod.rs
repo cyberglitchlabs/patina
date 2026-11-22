@@ -6,11 +6,11 @@
 pub mod hdhomerun;
 pub mod matching;
 
+use jiff::Timestamp;
 use std::path::Path;
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 
 use crate::config::StaticChannel;
 use crate::store::Store;
@@ -83,7 +83,7 @@ pub struct LoadedChannels {
     /// list (or empty if there never was one).
     pub stale: bool,
     /// When `channels` was last successfully loaded from the source.
-    pub loaded_at: Option<DateTime<Utc>>,
+    pub loaded_at: Option<Timestamp>,
     /// Why the live load failed, if it did.
     pub error: Option<String>,
 }
@@ -93,7 +93,7 @@ pub struct LoadedChannels {
 pub struct ChannelSourceStatus {
     pub channels_total: usize,
     pub stale: bool,
-    pub loaded_at: Option<DateTime<Utc>>,
+    pub loaded_at: Option<Timestamp>,
     pub error: Option<String>,
 }
 
@@ -117,7 +117,7 @@ impl ChannelSourceLoader {
         source_key: &str,
         source: &dyn ChannelSource,
         store: &dyn Store,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> LoadedChannels {
         // An empty list is treated as a failed load: a tuner in the middle
         // of a channel scan answers `[]`, and saving that would replace the

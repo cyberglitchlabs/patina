@@ -4,6 +4,7 @@
 
 mod support;
 
+use jiff::{SignedDuration, Timestamp};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -13,7 +14,6 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use bytes::Bytes;
-use chrono::{DateTime, TimeDelta, TimeZone as _, Utc};
 use http_body_util::BodyExt;
 use jiff::tz::TimeZone;
 use patina::auth::ct_eq;
@@ -39,8 +39,11 @@ use tower::ServiceExt;
 const ADMIN: &str = "admin-secret-xyz";
 const FEED: &str = "feed-secret-abc";
 
-fn now0() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 10, 31, 20, 0, 0).unwrap()
+fn now0() -> Timestamp {
+    jiff::civil::datetime(2026, 10, 31, 20, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp()
 }
 
 fn gn() -> ProviderId {
@@ -62,8 +65,12 @@ fn lineup() -> LineupCfg {
 
 /// The start of the n-th 6-hour window after 18:00 UTC (the window that
 /// contains `now0`). Distinct n never share a raw-cache entry.
-fn window(n: i64) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 10, 31, 18, 0, 0).unwrap() + TimeDelta::hours(6 * n)
+fn window(n: i64) -> Timestamp {
+    jiff::civil::datetime(2026, 10, 31, 18, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp()
+        + SignedDuration::from_hours(6 * n)
 }
 
 #[derive(Default)]
@@ -407,7 +414,7 @@ async fn status_shows_guide_horizon_and_coverage_after_ingest() {
 
     let s = status_json(&r).await;
     // Independent expectations, straight from the store.
-    let mut newest: Option<DateTime<Utc>> = None;
+    let mut newest: Option<Timestamp> = None;
     let mut total = 0;
     let mut with_data = 0;
     for c in r.store.list_channels().await.unwrap() {
@@ -415,8 +422,8 @@ async fn status_shows_guide_horizon_and_coverage_after_ingest() {
             .store
             .slots(
                 c.id,
-                now0() - TimeDelta::days(1),
-                now0() + TimeDelta::days(30),
+                now0() - SignedDuration::from_hours(24),
+                now0() + SignedDuration::from_hours(24 * 30),
             )
             .await
             .unwrap();
@@ -431,7 +438,7 @@ async fn status_shows_guide_horizon_and_coverage_after_ingest() {
     let g = &s["guide"];
     assert_eq!(g["slots_total"], total);
     assert_eq!(g["channels_with_data"], with_data);
-    let expected_hours = (newest - r.clock_now()).num_seconds() as f64 / 3600.0;
+    let expected_hours = (newest - r.clock_now()).as_secs() as f64 / 3600.0;
     assert!(expected_hours > 20.0, "a day of horizon: {expected_hours}");
     let hours = g["horizon_hours"].as_f64().unwrap();
     assert!(
@@ -440,7 +447,7 @@ async fn status_shows_guide_horizon_and_coverage_after_ingest() {
     );
     assert_eq!(
         g["newest_slot_end"].as_str().unwrap(),
-        newest.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+        newest.strftime("%Y-%m-%dT%H:%M:%SZ").to_string()
     );
     // 5 matched (3 + NOSLOTS... the unknown NOPE is not), 3 have slots.
     let src = &s["sources"][0];
@@ -497,7 +504,7 @@ async fn status_shows_guide_horizon_and_coverage_after_ingest() {
 }
 
 impl Rig {
-    fn clock_now(&self) -> DateTime<Utc> {
+    fn clock_now(&self) -> Timestamp {
         use patina::clock::Clock;
         self.clock.now()
     }
@@ -537,12 +544,12 @@ async fn status_shows_active_lineup_holds() {
     let report = r.sched.tick().await;
     assert_eq!(report.lineup_halted_bad_windows.len(), 1, "{report:?}");
     assert_eq!(r.fake.request_count(), 3);
-    let until = patina::clock::Clock::now(r.clock.as_ref()) + TimeDelta::hours(6);
+    let until = patina::clock::Clock::now(r.clock.as_ref()) + SignedDuration::from_hours(6);
     let s = status_json(&r).await;
     let holds = &provider_json(&s, "gracenote")["lineup_holds"];
     assert_eq!(holds.as_array().unwrap().len(), 1, "{holds}");
     assert_eq!(holds[0]["lineup"], "ota");
-    let shown: DateTime<Utc> = holds[0]["until"].as_str().unwrap().parse().unwrap();
+    let shown: Timestamp = holds[0]["until"].as_str().unwrap().parse().unwrap();
     assert_eq!(shown, until);
     assert!(
         holds[0]["until"].as_str().unwrap().ends_with('Z'),
@@ -551,7 +558,7 @@ async fn status_shows_active_lineup_holds() {
 
     // Still there one second before the end, gone at the end (even with no
     // tick in between).
-    r.clock.set(until - TimeDelta::seconds(1));
+    r.clock.set(until - SignedDuration::from_secs(1));
     let s = status_json(&r).await;
     assert_eq!(
         provider_json(&s, "gracenote")["lineup_holds"]
@@ -853,12 +860,12 @@ async fn requests_total_counts_outcomes() {
     assert_eq!(r.fake.request_count(), 1);
     // HTTP 400 for another window: bad_window; again: skipped_bad_window.
     r.fake
-        .set_for_window(window(1).timestamp(), Behavior::Status(400));
+        .set_for_window(window(1).as_second(), Behavior::Status(400));
     r.fetch.fetch(&gn(), &lineup(), window(1)).await;
     r.fetch.fetch(&gn(), &lineup(), window(1)).await;
     // 429: rate_limited; the next window is held back: skipped_backoff.
     r.fake
-        .set_for_window(window(2).timestamp(), Behavior::RetryAfter(120));
+        .set_for_window(window(2).as_second(), Behavior::RetryAfter(120));
     r.fetch.fetch(&gn(), &lineup(), window(2)).await;
     r.fetch.fetch(&gn(), &lineup(), window(3)).await;
 
@@ -1400,7 +1407,7 @@ async fn concurrent_scrapes_share_one_computation() {
 /// same `Metrics` `/metrics` renders.
 async fn run_janitor(r: &Rig) -> patina::janitor::JanitorReport {
     let pid = ProviderId("gracenote".into());
-    let old = patina::clock::Clock::now(r.clock.as_ref()) - chrono::TimeDelta::days(10);
+    let old = patina::clock::Clock::now(r.clock.as_ref()) - SignedDuration::from_hours(24 * 10);
     r.store
         .raw_put(&pid, "ota", old, old, b"old")
         .await
@@ -1434,7 +1441,10 @@ async fn status_shows_janitor_report_after_run() {
     assert!(j.is_object(), "{s}");
     assert_eq!(
         j["last_run"],
-        report.finished_at.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+        report
+            .finished_at
+            .strftime("%Y-%m-%dT%H:%M:%SZ")
+            .to_string()
     );
     assert_eq!(j["deleted"]["raw"], 2);
     for k in ["programmes", "images", "history", "state", "disk"] {

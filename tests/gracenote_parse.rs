@@ -2,11 +2,11 @@
 //! response, and mapping HTTP statuses to `FetchError`. No test here
 //! contacts the real Gracenote service.
 
+use jiff::Timestamp;
 use std::time::Duration;
 
 use axum::{Router, http::StatusCode, routing::get};
 use bytes::Bytes;
-use chrono::{DateTime, TimeZone, Utc};
 use patina::config::LineupCfg;
 use patina::model::canonical_id;
 use patina::provider::gracenote::{GracenoteProvider, map_status};
@@ -31,8 +31,11 @@ fn provider() -> GracenoteProvider {
     )
 }
 
-fn fetched_at() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 10, 31, 20, 0, 0).unwrap()
+fn fetched_at() -> Timestamp {
+    jiff::civil::datetime(2026, 10, 31, 20, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp()
 }
 
 fn raw(json: &str) -> RawResponse {
@@ -285,7 +288,7 @@ async fn fetch_window_sends_query_and_maps_429_from_the_wire() {
         patina::provider::gracenote::http_client(std::time::Duration::from_secs(10)).unwrap(),
         base,
     );
-    let start = Utc.timestamp_opt(1793480400, 0).unwrap();
+    let start = Timestamp::new(1793480400, 0).unwrap();
     match p.fetch_window(&lineup(), start).await {
         Err(FetchError::RateLimited { retry_after }) => {
             assert_eq!(retry_after, Some(Duration::from_secs(7)));

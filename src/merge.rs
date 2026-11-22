@@ -47,10 +47,9 @@
 //!   leaving it out (it must change the title, or send a new value). Keeping
 //!   a slightly stale detail is the safer failure.
 
+use jiff::{SignedDuration, Timestamp};
 use std::cmp::Ordering;
 use std::ops::Range;
-
-use chrono::{DateTime, SubsecRound, TimeDelta, Utc};
 
 use crate::model::{ChannelId, MasterSlot, Observation, ProviderId, ScoreBreakdown, SlotId};
 
@@ -68,7 +67,7 @@ pub struct Coverage {
     pub provider: ProviderId,
     pub channel: ChannelId,
     /// The time window the request asked for and the response answered.
-    pub window: Range<DateTime<Utc>>,
+    pub window: Range<Timestamp>,
     /// Whether the response listed this channel at all. A response that does
     /// not list the channel says nothing about it, so nothing changes.
     pub channel_present: bool,
@@ -79,7 +78,7 @@ pub struct Coverage {
 pub struct StoredObservation {
     pub observation: Observation,
     /// When this provider first reported this slot.
-    pub first_seen: DateTime<Utc>,
+    pub first_seen: Timestamp,
     /// How many times this provider's start, end or title for this slot
     /// changed between fetches (flip-flopping).
     pub changes: u32,
@@ -114,9 +113,9 @@ pub struct SlotView {
     /// How many times this provider's start/end/title for this slot changed.
     pub changes: u32,
     /// When this provider first reported this slot.
-    pub first_seen: DateTime<Utc>,
+    pub first_seen: Timestamp,
     /// The planning time.
-    pub now: DateTime<Utc>,
+    pub now: Timestamp,
     /// Running per-provider averages, when the scorer has them.
     pub provider_stats: Option<ProviderStats>,
 }
@@ -145,8 +144,8 @@ pub trait Scorer {
 /// The content columns of a slot (everything except its id and channel).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SlotFields {
-    pub start: DateTime<Utc>,
-    pub end: DateTime<Utc>,
+    pub start: Timestamp,
+    pub end: Timestamp,
     pub title: String,
     pub subtitle: Option<String>,
     pub description: Option<String>,
@@ -185,7 +184,7 @@ pub enum SlotRef {
 pub struct ObservationWrite {
     pub slot: SlotRef,
     pub observation: Observation,
-    pub first_seen: DateTime<Utc>,
+    pub first_seen: Timestamp,
     pub changes: u32,
 }
 
@@ -216,7 +215,7 @@ pub struct MergePlan {
     /// Existing slots the response touched that needed no change.
     pub unchanged: usize,
     /// Written to `slots.updated_at` for inserted and updated rows.
-    pub planned_at: DateTime<Utc>,
+    pub planned_at: Timestamp,
     /// For every incoming observation the plan assigned to an EXISTING slot
     /// (matched in step 2 or attached in step 5), which slot that is, in
     /// incoming order. Also listed when the slot ends up unchanged, or is
@@ -231,7 +230,7 @@ pub struct MergePlan {
 
 impl MergePlan {
     /// A plan that changes nothing.
-    pub fn empty(planned_at: DateTime<Utc>) -> Self {
+    pub fn empty(planned_at: Timestamp) -> Self {
         MergePlan {
             removals: Vec::new(),
             superseded: Vec::new(),
@@ -281,16 +280,16 @@ pub struct MergeApplied {
 // ---------------------------------------------------------------------------
 
 /// Seconds two ranges share (0 when they do not overlap).
-pub fn overlap_secs(a: &Range<DateTime<Utc>>, b: &Range<DateTime<Utc>>) -> i64 {
+pub fn overlap_secs(a: &Range<Timestamp>, b: &Range<Timestamp>) -> i64 {
     let start = a.start.max(b.start);
     let end = a.end.min(b.end);
-    (end - start).num_seconds().max(0)
+    (end - start).as_secs().max(0)
 }
 
 /// Overlap as a fraction of the shorter range, 0..1 (used only to rank
 /// matches; the yes/no rule is `same_slot`).
-fn overlap_fraction(a: &Range<DateTime<Utc>>, b: &Range<DateTime<Utc>>) -> f64 {
-    let shorter = (a.end - a.start).min(b.end - b.start).num_seconds();
+fn overlap_fraction(a: &Range<Timestamp>, b: &Range<Timestamp>) -> f64 {
+    let shorter = (a.end - a.start).min(b.end - b.start).as_secs();
     if shorter <= 0 {
         return 0.0;
     }
@@ -300,8 +299,8 @@ fn overlap_fraction(a: &Range<DateTime<Utc>>, b: &Range<DateTime<Utc>>) -> f64 {
 /// The same-slot rule: overlap of at least 50% of the shorter range. (The
 /// caller makes sure both are on the same channel.) Written with integers so
 /// "exactly half" is not at the mercy of floating point.
-pub fn same_slot(a: &Range<DateTime<Utc>>, b: &Range<DateTime<Utc>>) -> bool {
-    let shorter = (a.end - a.start).min(b.end - b.start).num_seconds();
+pub fn same_slot(a: &Range<Timestamp>, b: &Range<Timestamp>) -> bool {
+    let shorter = (a.end - a.start).min(b.end - b.start).as_secs();
     shorter > 0 && 2 * overlap_secs(a, b) >= shorter
 }
 
@@ -313,7 +312,7 @@ pub fn same_slot(a: &Range<DateTime<Utc>>, b: &Range<DateTime<Utc>>) -> bool {
 /// slot. Aired programmes are kept 7 days for history (spec 4.15), so filling
 /// a gap in that recent history is harmless; anything older the janitor would
 /// delete anyway, so it is ignored.
-const AIRED_INSERT_LOOKBACK: TimeDelta = TimeDelta::days(7);
+const AIRED_INSERT_LOOKBACK: SignedDuration = SignedDuration::from_hours(24 * 7);
 
 /// Safety bound for the "settle the slot ranges" loop below. Every round
 /// strictly improves at least one slot's choice, so it ends long before this
@@ -387,7 +386,7 @@ pub fn plan_merge(
     incoming: &[Observation],
     coverage: &Coverage,
     scorer: &dyn Scorer,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> MergePlan {
     let mut plan = MergePlan::empty(now);
     // A response that does not list the channel says nothing about it.
@@ -635,7 +634,7 @@ pub fn plan_merge(
     plan.matches.sort_by_key(|m| m.incoming);
 
     // Step 5, second half: new slots for what is left.
-    let mut accepted: Vec<Range<DateTime<Utc>>> = Vec::new();
+    let mut accepted: Vec<Range<Timestamp>> = Vec::new();
     for (i, o) in fresh.iter().enumerate() {
         if slot_of[i].is_some() {
             continue; // matched (aired slots never get a match)
@@ -668,6 +667,11 @@ pub fn plan_merge(
     plan
 }
 
+/// `t` without its sub-second part (always in range: it came from one).
+fn whole_seconds(t: Timestamp) -> Timestamp {
+    Timestamp::from_second(t.as_second()).expect("a whole-second time of a valid time is valid")
+}
+
 /// Step 1: keep only this response's valid observations for the channel,
 /// sorted, without repeats of the same slot. Times are cut to whole seconds,
 /// because that is what the store keeps: otherwise a re-sent identical
@@ -681,9 +685,9 @@ fn clean_incoming(incoming: &[Observation], coverage: &Coverage) -> (Vec<Observa
         .enumerate()
         .map(|(n, o)| {
             let mut o = o.clone();
-            o.start = o.start.trunc_subsecs(0);
-            o.end = o.end.trunc_subsecs(0);
-            o.fetched_at = o.fetched_at.trunc_subsecs(0);
+            o.start = whole_seconds(o.start);
+            o.end = whole_seconds(o.end);
+            o.fetched_at = whole_seconds(o.fetched_at);
             (n, o)
         })
         .filter(|(_, o)| {
@@ -840,7 +844,7 @@ struct Settled {
     /// Slots whose observations changed in this plan.
     touched: Vec<bool>,
     /// Final time range of every slot (unchanged for untouched slots).
-    ranges: Vec<Range<DateTime<Utc>>>,
+    ranges: Vec<Range<Timestamp>>,
     /// New content for touched slots; `None` = keep the slot as it is.
     fields: Vec<Option<SlotFields>>,
 }
@@ -858,7 +862,7 @@ fn settle(
     frozen: &[bool],
     coverage: &Coverage,
     scorer: &dyn Scorer,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Settled {
     let n = slots.len();
     let provider = &coverage.provider;
@@ -924,7 +928,7 @@ fn settle(
     // provider cannot remove, or the winner's times would end the slot at or
     // before `now`. Then title and times may come from different
     // observations until that changes.
-    let mut ranges: Vec<Range<DateTime<Utc>>> =
+    let mut ranges: Vec<Range<Timestamp>> =
         slots.iter().map(|s| s.slot.start..s.slot.end).collect();
     for _ in 0..MAX_SETTLE_ROUNDS {
         let mut moved = false;
@@ -968,7 +972,7 @@ fn settle(
 /// Stability bookkeeping for a provider's new observation `o` of a slot it
 /// had observed as `old`: keep the first-seen time, and count a change when
 /// start, end or title differ.
-fn counters(o: &Observation, old: Option<&StoredObservation>) -> (DateTime<Utc>, u32) {
+fn counters(o: &Observation, old: Option<&StoredObservation>) -> (Timestamp, u32) {
     match old {
         Some(old) => {
             let p = &old.observation;
@@ -985,11 +989,11 @@ fn counters(o: &Observation, old: Option<&StoredObservation>) -> (DateTime<Utc>,
 /// Build the `SlotView` for one observation and score it.
 fn score_candidate(
     obs: Observation,
-    first_seen: DateTime<Utc>,
+    first_seen: Timestamp,
     changes: u32,
     coverage: &Coverage,
     scorer: &dyn Scorer,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Candidate {
     let view = SlotView {
         provider_stats: scorer.provider_stats(&obs.provider, &coverage.channel),

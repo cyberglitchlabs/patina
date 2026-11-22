@@ -18,12 +18,12 @@
 //! "Unknown" data scores the neutral 0.5, never the maximum: a provider we
 //! know nothing about should neither win nor lose because of that.
 
+use jiff::{SignedDuration, Timestamp};
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::Arc;
 
 use anyhow::Result;
-use chrono::{DateTime, TimeDelta, Utc};
 
 use crate::config::Weights;
 use crate::merge::{ProviderStats, Scorer, SlotView};
@@ -99,7 +99,7 @@ pub fn next_accuracy_row(
     provider: &ProviderId,
     channel: &ChannelId,
     sample: f64,
-    at: DateTime<Utc>,
+    at: Timestamp,
 ) -> AccuracyRow {
     let current = old
         .map(|r| ProviderChannelAccuracy {
@@ -128,8 +128,8 @@ const TITLE_CHANGE_CAP: f64 = 0.25;
 
 /// Unix time in seconds as a wide integer, so differences of extreme dates
 /// cannot overflow.
-fn secs(t: DateTime<Utc>) -> i128 {
-    i128::from(t.timestamp())
+fn secs(t: Timestamp) -> i128 {
+    i128::from(t.as_second())
 }
 
 /// A title reduced to lowercase words of letters and digits, so "The News!"
@@ -181,11 +181,11 @@ const STABILITY_PERIOD_SECS: i64 = 6 * 3600;
 ///
 /// Returns 0 (meaning "unknown") when `first_seen` is at or before 1970:
 /// rows written before migration 0004 have `first_seen = 0`.
-pub fn stability_observations(first_seen: DateTime<Utc>, fetched_at: DateTime<Utc>) -> u32 {
-    if first_seen.timestamp() <= 0 {
+pub fn stability_observations(first_seen: Timestamp, fetched_at: Timestamp) -> u32 {
+    if first_seen.as_second() <= 0 {
         return 0;
     }
-    let span = (fetched_at.timestamp() - first_seen.timestamp()).max(0);
+    let span = (fetched_at.as_second() - first_seen.as_second()).max(0);
     let periods = span / STABILITY_PERIOD_SECS;
     u32::try_from(periods).unwrap_or(u32::MAX).saturating_add(1)
 }
@@ -206,9 +206,9 @@ pub mod signals {
     /// until air if that is longer (a listing for next week does not go
     /// stale as fast as one for tonight). Formula: `0.5 ^ (age / half_life)`.
     /// A negative age (clock skew) counts as just fetched (1.0).
-    pub fn freshness(age: TimeDelta, horizon: TimeDelta) -> f64 {
-        let age = age.num_seconds().max(0) as f64;
-        let horizon = horizon.num_seconds().max(0) as f64;
+    pub fn freshness(age: SignedDuration, horizon: SignedDuration) -> f64 {
+        let age = age.as_secs().max(0) as f64;
+        let horizon = horizon.as_secs().max(0) as f64;
         let half_life = FRESHNESS_HALF_LIFE_SECS.max(horizon / 4.0);
         unit(0.5f64.powf(age / half_life))
     }
@@ -246,8 +246,8 @@ pub mod signals {
     const MIN_PLAUSIBLE_SECS: i128 = 60;
     const MAX_PLAUSIBLE_SECS: i128 = 8 * 3600;
     /// Whether a time sits exactly on a whole minute.
-    fn on_minute(t: DateTime<Utc>) -> bool {
-        t.timestamp().rem_euclid(60) == 0 && t.timestamp_subsec_nanos() == 0
+    fn on_minute(t: Timestamp) -> bool {
+        t.as_second().rem_euclid(60) == 0 && t.subsec_nanosecond() == 0
     }
 
     /// **Timeline sanity**: is this programme's own time range plausible?
@@ -259,7 +259,7 @@ pub mod signals {
     /// * shorter than 1 minute or longer than 8 hours: x0.3;
     /// * a start or end not on a whole minute: x0.95 each (a mild hint of
     ///   bad data; listings are minute-aligned).
-    pub fn timeline_sanity(this: &Range<DateTime<Utc>>) -> f64 {
+    pub fn timeline_sanity(this: &Range<Timestamp>) -> f64 {
         let duration = secs(this.end) - secs(this.start);
         if duration <= 0 {
             return 0.0;

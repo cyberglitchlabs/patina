@@ -2,10 +2,10 @@
 //! in-memory stand-in for the database that applies a `MergePlan` the same way
 //! `Store::apply_merge` does (the store contract checks the real backends).
 
+use jiff::{SignedDuration, Timestamp};
 use std::collections::HashMap;
 use std::ops::Range;
 
-use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 use patina::merge::{
     Coverage, MergePlan, NewSlot, Scorer, SlotFields, SlotRef, SlotView, SlotWithObservations,
     StoredObservation, plan_merge,
@@ -33,8 +33,12 @@ impl Scorer for StubScorer {
 }
 
 /// 2026-11-01 00:00 UTC plus `min` minutes.
-pub fn t(min: i64) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap() + TimeDelta::minutes(min)
+pub fn t(min: i64) -> Timestamp {
+    jiff::civil::datetime(2026, 11, 1, 0, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp()
+        + SignedDuration::from_mins(min)
 }
 
 pub fn ch() -> ChannelId {
@@ -75,11 +79,11 @@ pub fn cover(provider: &str, from: i64, to: i64) -> Coverage {
     }
 }
 
-pub fn range(s: &MasterSlot) -> Range<DateTime<Utc>> {
+pub fn range(s: &MasterSlot) -> Range<Timestamp> {
     s.start..s.end
 }
 
-fn master_from(id: SlotId, channel: ChannelId, f: &SlotFields, at: DateTime<Utc>) -> MasterSlot {
+fn master_from(id: SlotId, channel: ChannelId, f: &SlotFields, at: Timestamp) -> MasterSlot {
     MasterSlot {
         id,
         channel,
@@ -113,7 +117,7 @@ impl Sim {
         incoming: &[Observation],
         coverage: &Coverage,
         scorer: &dyn Scorer,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> MergePlan {
         plan_merge(&self.slots, incoming, coverage, scorer, now)
     }
@@ -124,7 +128,7 @@ impl Sim {
         incoming: &[Observation],
         coverage: &Coverage,
         scorer: &dyn Scorer,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> MergePlan {
         let plan = self.plan(incoming, coverage, scorer, now);
         self.apply(&plan);

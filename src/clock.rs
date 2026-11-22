@@ -1,19 +1,19 @@
 //! Time source. Code that makes decisions based on time (budgets, backoff,
 //! circuit breaker, rate limiting) asks a `Clock` instead of calling
-//! `Utc::now()` directly, so tests can control time with [`FakeClock`].
+//! `Timestamp::now()` directly, so tests can control time with [`FakeClock`].
 
+use jiff::{SignedDuration, Timestamp};
 use std::sync::Mutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use chrono::{DateTime, TimeDelta, Utc};
 
 #[async_trait]
 pub trait Clock: Send + Sync {
-    fn now(&self) -> DateTime<Utc>;
+    fn now(&self) -> Timestamp;
 
     /// Wait until `deadline` (returns at once if it has passed).
-    async fn sleep_until(&self, deadline: DateTime<Utc>);
+    async fn sleep_until(&self, deadline: Timestamp);
 }
 
 /// The real wall clock.
@@ -22,14 +22,14 @@ pub struct SystemClock;
 
 #[async_trait]
 impl Clock for SystemClock {
-    fn now(&self) -> DateTime<Utc> {
-        Utc::now()
+    fn now(&self) -> Timestamp {
+        Timestamp::now()
     }
 
-    async fn sleep_until(&self, deadline: DateTime<Utc>) {
+    async fn sleep_until(&self, deadline: Timestamp) {
         // A negative difference (deadline already passed) becomes an error
-        // from `to_std`, which we treat as "no wait".
-        if let Ok(wait) = (deadline - Utc::now()).to_std() {
+        // from the conversion, which we treat as "no wait".
+        if let Ok(wait) = Duration::try_from(deadline - Timestamp::now()) {
             tokio::time::sleep(wait).await;
         }
     }
@@ -43,11 +43,11 @@ impl Clock for SystemClock {
 /// seconds runs instantly and deterministically in tests.
 #[derive(Debug)]
 pub struct FakeClock {
-    now: Mutex<DateTime<Utc>>,
+    now: Mutex<Timestamp>,
 }
 
 impl FakeClock {
-    pub fn new(start: DateTime<Utc>) -> Self {
+    pub fn new(start: Timestamp) -> Self {
         FakeClock {
             now: Mutex::new(start),
         }
@@ -56,22 +56,22 @@ impl FakeClock {
     /// Move time forward.
     pub fn advance(&self, by: Duration) {
         let mut now = self.now.lock().unwrap();
-        *now += TimeDelta::from_std(by).expect("duration out of range");
+        *now += SignedDuration::try_from(by).expect("duration out of range");
     }
 
     /// Jump to a given time (forwards or backwards).
-    pub fn set(&self, to: DateTime<Utc>) {
+    pub fn set(&self, to: Timestamp) {
         *self.now.lock().unwrap() = to;
     }
 }
 
 #[async_trait]
 impl Clock for FakeClock {
-    fn now(&self) -> DateTime<Utc> {
+    fn now(&self) -> Timestamp {
         *self.now.lock().unwrap()
     }
 
-    async fn sleep_until(&self, deadline: DateTime<Utc>) {
+    async fn sleep_until(&self, deadline: Timestamp) {
         {
             let mut now = self.now.lock().unwrap();
             if deadline > *now {

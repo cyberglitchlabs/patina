@@ -1,10 +1,13 @@
 //! The 6-hour window grid: where a window starts for any instant.
 
-use chrono::{DateTime, TimeDelta, TimeZone, Utc};
+use jiff::{SignedDuration, Timestamp};
 use patina::scheduler::window_floor;
 
-fn utc(y: i32, mo: u32, d: u32, h: u32, mi: u32, s: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(y, mo, d, h, mi, s).unwrap()
+fn utc(y: i16, mo: i8, d: i8, h: i8, mi: i8, s: i8) -> Timestamp {
+    jiff::civil::datetime(y, mo, d, h, mi, s, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp()
 }
 
 #[test]
@@ -24,7 +27,7 @@ fn a_window_starts_on_the_six_hour_grid_in_utc() {
 
 #[test]
 fn a_fraction_of_a_second_does_not_move_the_window() {
-    let t = utc(2026, 11, 1, 5, 59, 59) + TimeDelta::milliseconds(999);
+    let t = utc(2026, 11, 1, 5, 59, 59) + SignedDuration::from_millis(999);
     assert_eq!(window_floor(t), utc(2026, 11, 1, 0, 0, 0));
 }
 
