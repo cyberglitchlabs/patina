@@ -198,65 +198,89 @@ pub struct Scheduler {
 
 /// What the scheduler has observed, shared (behind an `Arc`) with the HTTP
 /// status handler, because `Scheduler::run` consumes the scheduler itself.
-/// Plain mutexes: held only briefly, never across `.await`.
+/// One plain mutex around all of it, held only briefly and never across
+/// `.await`, so [`snapshot`](Self::snapshot) shows one moment.
 #[derive(Default)]
 pub struct SchedulerStatus {
-    quality: Mutex<BTreeMap<ProviderId, ResponseQuality>>,
-    last_tick: Mutex<Option<(DateTime<Utc>, TickReport)>>,
+    inner: Mutex<Observed>,
+}
+
+#[derive(Default)]
+struct Observed {
+    quality: BTreeMap<ProviderId, ResponseQuality>,
+    last_tick: Option<(DateTime<Utc>, TickReport)>,
     /// Each lineup's 400-streak and bad-window hold, keyed by (provider,
     /// lineup name). Kept in memory only, on purpose: after a restart the
     /// hold is gone, which costs at most the 3 requests that set it again
     /// (`ledger::BAD_WINDOW_STREAK_LIMIT`). Here (not on `Scheduler`) so
     /// `/status` can show the active holds.
-    lineups: Mutex<BTreeMap<(ProviderId, String), LineupRun>>,
+    lineups: BTreeMap<(ProviderId, String), LineupRun>,
+}
+
+/// What `/status` shows of the scheduler, all read at the same moment.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatusSnapshot {
+    /// The latest response-quality check for each provider.
+    pub quality: BTreeMap<ProviderId, ResponseQuality>,
+    /// When the latest finished tick ended and what it did; `None` before
+    /// the first tick finished.
+    pub last_tick: Option<(DateTime<Utc>, TickReport)>,
+    /// The bad-window holds active at the snapshot time: per provider,
+    /// (lineup name, hold end), in lineup-name order. Ended holds are left
+    /// out even before the next tick forgets them.
+    pub holds: BTreeMap<ProviderId, Vec<(String, DateTime<Utc>)>>,
 }
 
 impl SchedulerStatus {
-    /// The latest response-quality check for each provider.
-    pub fn response_quality(&self) -> BTreeMap<ProviderId, ResponseQuality> {
-        self.quality.lock().unwrap().clone()
+    /// The lock, also after a panic elsewhere poisoned it: the data is plain
+    /// values, so `/status` keeps working instead of panicking forever.
+    fn state(&self) -> std::sync::MutexGuard<'_, Observed> {
+        self.inner.lock().unwrap_or_else(|e| {
+            tracing::warn!("scheduler status lock was poisoned by a panic; carrying on");
+            e.into_inner()
+        })
     }
 
-    /// When the latest finished tick ended and what it did; `None` before
-    /// the first tick finished.
-    pub fn last_tick(&self) -> Option<(DateTime<Utc>, TickReport)> {
-        self.last_tick.lock().unwrap().clone()
-    }
-
-    /// The bad-window holds active at `now`: per provider, (lineup name,
-    /// hold end), in lineup-name order. Ended holds are left out even before
-    /// the next tick forgets them.
-    pub fn lineup_holds(
-        &self,
-        now: DateTime<Utc>,
-    ) -> BTreeMap<ProviderId, Vec<(String, DateTime<Utc>)>> {
-        let mut out: BTreeMap<ProviderId, Vec<(String, DateTime<Utc>)>> = BTreeMap::new();
-        for ((provider, lineup), run) in self.lineups.lock().unwrap().iter() {
+    /// Everything `/status` shows of the scheduler, as of `now`.
+    pub fn snapshot(&self, now: DateTime<Utc>) -> StatusSnapshot {
+        let st = self.state();
+        let mut holds: BTreeMap<ProviderId, Vec<(String, DateTime<Utc>)>> = BTreeMap::new();
+        for ((provider, lineup), run) in &st.lineups {
             if let Some(until) = run.held_until(now) {
-                out.entry(provider.clone())
+                holds
+                    .entry(provider.clone())
                     .or_default()
                     .push((lineup.clone(), until));
             }
         }
-        out
+        StatusSnapshot {
+            quality: st.quality.clone(),
+            last_tick: st.last_tick.clone(),
+            holds,
+        }
+    }
+
+    /// Remember a provider's latest response-quality check.
+    fn record_quality(&self, provider: ProviderId, quality: ResponseQuality) {
+        self.state().quality.insert(provider, quality);
+    }
+
+    /// Remember that a tick finished at `at` and what it did.
+    fn record_tick(&self, at: DateTime<Utc>, report: TickReport) {
+        self.state().last_tick = Some((at, report));
     }
 
     /// One lineup's streak and hold (the default when it has none).
     fn lineup(&self, key: &(ProviderId, String)) -> LineupRun {
-        self.lineups
-            .lock()
-            .unwrap()
-            .get(key)
-            .copied()
-            .unwrap_or_default()
+        self.state().lineups.get(key).copied().unwrap_or_default()
     }
 
     fn set_lineup(&self, key: (ProviderId, String), run: LineupRun) {
-        let mut map = self.lineups.lock().unwrap();
+        let mut st = self.state();
         if run == LineupRun::default() {
-            map.remove(&key); // nothing to remember
+            st.lineups.remove(&key); // nothing to remember
         } else {
-            map.insert(key, run);
+            st.lineups.insert(key, run);
         }
     }
 
@@ -264,11 +288,11 @@ impl SchedulerStatus {
     /// `LineupRun::start_tick`). Holds that are still on stay, also when
     /// the tick is cancelled.
     fn start_tick(&self, now: DateTime<Utc>) {
-        let mut map = self.lineups.lock().unwrap();
-        for run in map.values_mut() {
+        let mut st = self.state();
+        for run in st.lineups.values_mut() {
             *run = run.start_tick(now);
         }
-        map.retain(|_, run| *run != LineupRun::default());
+        st.lineups.retain(|_, run| *run != LineupRun::default());
     }
 }
 
@@ -336,7 +360,7 @@ impl Scheduler {
 
     /// The latest response-quality check for each provider.
     pub fn response_quality(&self) -> BTreeMap<ProviderId, ResponseQuality> {
-        self.status.response_quality()
+        self.status.state().quality.clone()
     }
 
     /// One full pass: decide which windows are due, fetch, parse, merge.
@@ -437,7 +461,7 @@ impl Scheduler {
         }
 
         report.channels_seen = ingest.finish().await;
-        *self.status.last_tick.lock().unwrap() = Some((self.clock.now(), report.clone()));
+        self.status.record_tick(self.clock.now(), report.clone());
         report
     }
 
@@ -547,7 +571,7 @@ impl Scheduler {
     ) {
         let acceptable = ledger::acceptable(&integrity);
         tracing::debug!(provider = %p.id.0, lineup = %lineup.name, window = %window_start, ?integrity, acceptable, "response timeline check");
-        self.status.quality.lock().unwrap().insert(
+        self.status.record_quality(
             p.id.clone(),
             ResponseQuality {
                 lineup: lineup.name.clone(),
@@ -612,5 +636,95 @@ impl Scheduler {
         {
             tracing::warn!(provider = %provider.0, error = %format!("{e:#}"), "cannot save window state");
         }
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+    use crate::ledger::BAD_WINDOW_HOLD;
+
+    fn at(h: u32) -> DateTime<Utc> {
+        chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 11, 1, h, 0, 0).unwrap()
+    }
+
+    fn quality(checked_at: DateTime<Utc>) -> ResponseQuality {
+        ResponseQuality {
+            lineup: "ota".into(),
+            window_start: checked_at,
+            checked_at,
+            integrity: TimelineReport::default(),
+            acceptable: true,
+        }
+    }
+
+    fn held(until: DateTime<Utc>) -> LineupRun {
+        LineupRun {
+            streak: 3,
+            hold_until: Some(until),
+        }
+    }
+
+    fn key(provider: &str, lineup: &str) -> (ProviderId, String) {
+        (ProviderId(provider.into()), lineup.into())
+    }
+
+    #[test]
+    fn a_fresh_status_has_nothing_to_show() {
+        let snap = SchedulerStatus::default().snapshot(at(12));
+        assert!(snap.quality.is_empty() && snap.last_tick.is_none() && snap.holds.is_empty());
+    }
+
+    #[test]
+    fn the_snapshot_carries_the_recorded_tick_and_quality_together() {
+        let status = SchedulerStatus::default();
+        let report = TickReport {
+            fetched: 2,
+            ..TickReport::default()
+        };
+        status.record_quality(ProviderId("a".into()), quality(at(11)));
+        status.record_tick(at(12), report.clone());
+
+        let snap = status.snapshot(at(12));
+        assert_eq!(snap.last_tick, Some((at(12), report)));
+        assert_eq!(snap.quality[&ProviderId("a".into())], quality(at(11)));
+    }
+
+    #[test]
+    fn holds_list_active_ones_per_provider_in_lineup_name_order() {
+        let status = SchedulerStatus::default();
+        let until = at(12) + BAD_WINDOW_HOLD;
+        status.set_lineup(key("a", "zzz"), held(until));
+        status.set_lineup(key("a", "ota"), held(until));
+        status.set_lineup(key("b", "ota"), held(at(11)));
+
+        let holds = status.snapshot(at(12)).holds;
+        let names: Vec<_> = holds[&ProviderId("a".into())]
+            .iter()
+            .map(|(lineup, _)| lineup.as_str())
+            .collect();
+        assert_eq!(names, ["ota", "zzz"]);
+        assert!(
+            !holds.contains_key(&ProviderId("b".into())),
+            "an ended hold is left out"
+        );
+    }
+
+    #[test]
+    fn starting_a_tick_keeps_active_holds_and_forgets_ended_ones() {
+        let status = SchedulerStatus::default();
+        status.set_lineup(key("a", "live"), held(at(12) + BAD_WINDOW_HOLD));
+        status.set_lineup(key("a", "over"), held(at(11)));
+
+        status.start_tick(at(12));
+
+        let holds = status.snapshot(at(12)).holds;
+        assert_eq!(holds[&ProviderId("a".into())].len(), 1);
+        assert_eq!(
+            status.lineup(&key("a", "live")).streak,
+            0,
+            "streak restarts"
+        );
+        assert_eq!(status.lineup(&key("a", "over")), LineupRun::default());
     }
 }

@@ -391,11 +391,11 @@ impl Admin {
                     .collect()
             })
             .unwrap_or_default();
-        let quality = self.deps.scheduler.response_quality();
+        let snapshot = self.deps.scheduler.snapshot(now);
         let mut providers = Vec::new();
         for id in &self.deps.providers {
             providers.push(
-                self.provider_status(id, now, deadline, &reliability, &quality)
+                self.provider_status(id, now, deadline, &reliability, &snapshot)
                     .await,
             );
         }
@@ -454,7 +454,7 @@ impl Admin {
             },
         };
 
-        let last = self.deps.scheduler.last_tick();
+        let last = snapshot.last_tick;
         Status {
             version: self.deps.version.to_string(),
             uptime_seconds: u64::try_from(uptime).unwrap_or(0),
@@ -479,26 +479,27 @@ impl Admin {
         now: DateTime<Utc>,
         deadline: Instant,
         reliability: &BTreeMap<ProviderId, (u32, u32)>,
-        quality: &BTreeMap<ProviderId, crate::scheduler::ResponseQuality>,
+        snapshot: &crate::scheduler::StatusSnapshot,
     ) -> ProviderStatus {
         let success_rate = reliability
             .get(id)
             .filter(|(_, total)| *total > 0)
             .map(|(ok, total)| round2(f64::from(*ok) / f64::from(*total)));
-        let response_quality = quality.get(id).map(|q| QualityStatus {
+        let response_quality = snapshot.quality.get(id).map(|q| QualityStatus {
             gap_fraction: q.integrity.gap_fraction,
             overlap_fraction: q.integrity.overlap_fraction,
             observed_minutes: q.integrity.observed_minutes,
             at: q.checked_at,
         });
-        let lineup_holds: Vec<LineupHoldStatus> = self
-            .deps
-            .scheduler
-            .lineup_holds(now)
-            .remove(id)
-            .unwrap_or_default()
+        let lineup_holds: Vec<LineupHoldStatus> = snapshot
+            .holds
+            .get(id)
             .into_iter()
-            .map(|(lineup, until)| LineupHoldStatus { lineup, until })
+            .flatten()
+            .map(|(lineup, until)| LineupHoldStatus {
+                lineup: lineup.clone(),
+                until: *until,
+            })
             .collect();
         let day = now.date_naive().format("%Y-%m-%d").to_string();
         let state = self
