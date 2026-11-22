@@ -1,5 +1,6 @@
-//! Storage interface. The rest of the program only talks to the `Store` trait;
-//! each database (SQLite and PostgreSQL) implements it in its own file.
+//! Storage interface. The rest of the program only talks to the `Store` trait.
+//! One generic `SqlStore<D>` (`sql.rs`) implements it for both databases; the
+//! `Backend` impls in `sqlite.rs` and `postgres.rs` hold what differs.
 
 mod dialect;
 pub mod postgres;

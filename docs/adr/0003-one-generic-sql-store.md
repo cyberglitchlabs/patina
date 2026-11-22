@@ -8,7 +8,7 @@ status: accepted
 
 Before this, two near-identical ~1100-line files held the same statements. A fix could land in one and be missed in the other, and after normalizing placeholders, no query differed.
 
-Season, episode and `changes` are 32-bit `INTEGER` columns on both backends. SQLite used to accept values up to `u32::MAX` there while Postgres refused them; both now refuse anything above `i32::MAX`.
+Season, episode and `changes` are 32-bit `INTEGER` columns on both backends. SQLite used to accept values up to `u32::MAX` there while Postgres refused them; both now refuse anything above `i32::MAX`. A SQLite database that already holds such a value would no longer read back cleanly; no provider sends numbers that large, and Postgres never accepted them.
 
 ## Consequences
 

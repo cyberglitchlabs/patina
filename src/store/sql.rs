@@ -374,7 +374,7 @@ where
 
     async fn apply_merge(&self, plan: MergePlan) -> Result<MergeApplied> {
         // Everything happens in one transaction: if any statement fails, the
-        // transaction is dropped without commit and SQLite undoes all of it.
+        // transaction is dropped without commit and the database undoes all of it.
         let mut tx = self.pool.begin().await?;
         let mut stats = MergeStats {
             unchanged: plan.unchanged,
@@ -926,7 +926,7 @@ where
     ) -> Result<u64> {
         // Only the slot rows are named here. Their observations disappear by
         // themselves: observations.slot_id is ON DELETE CASCADE and this
-        // store turns SQLite's foreign keys on for every connection. Index
+        // database enforces foreign keys on every connection (SQLite: set in sqlite.rs). Index
         // slots_end_idx (migration 0007) serves the filter and the order.
         let done = query::<D>(
             "DELETE FROM slots WHERE id IN \
