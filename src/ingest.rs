@@ -260,25 +260,29 @@ pub struct WindowIngest {
     /// which rows `finish` has to write.
     accuracy: BTreeMap<(ProviderId, ChannelId), AccuracyRow>,
     dirty: BTreeSet<(ProviderId, ChannelId)>,
+    /// False when the stored averages could not be read: no hindsight is
+    /// kept this tick, so fresh averages never replace stored ones.
+    accuracy_loaded: bool,
     channels_seen: BTreeSet<ChannelId>,
 }
 
 impl WindowIngest {
     /// Load the scoring inputs. If a table cannot be read the scorer uses
     /// neutral values for it (each table falls back on its own); merging
-    /// still works.
+    /// still works. If the accuracy table cannot be read, this tick also
+    /// keeps no hindsight, so the stored averages are never overwritten.
     pub async fn begin(
         store: Arc<dyn Store>,
         weights: &Weights,
         feed_generation: Option<Arc<AtomicU64>>,
     ) -> Self {
-        let acc_rows = store
-            .provider_accuracy_load_all()
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %format!("{e:#}"), "cannot load accuracy; using neutral values");
-                Vec::new()
-            });
+        let (acc_rows, accuracy_loaded) = match store.provider_accuracy_load_all().await {
+            Ok(rows) => (rows, true),
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "cannot load accuracy; using neutral values and keeping stored averages");
+                (Vec::new(), false)
+            }
+        };
         let rel_rows = store
             .provider_reliability_load_all()
             .await
@@ -296,6 +300,7 @@ impl WindowIngest {
                 .map(|r| ((r.provider.clone(), r.channel.clone()), r))
                 .collect(),
             dirty: BTreeSet::new(),
+            accuracy_loaded,
             channels_seen: BTreeSet::new(),
         }
     }
@@ -387,9 +392,14 @@ impl WindowIngest {
     }
 
     /// Write the hindsight averages changed during the tick (one write per
-    /// provider and channel). Returns how many distinct channels the tick's
+    /// provider and channel), unless the stored averages could not be read
+    /// in `begin`. Returns how many distinct channels the tick's
     /// responses listed.
     pub async fn finish(self) -> usize {
+        if !self.accuracy_loaded {
+            tracing::warn!("stored accuracy could not be read; this tick's hindsight is not saved");
+            return self.channels_seen.len();
+        }
         for key in &self.dirty {
             if let Some(row) = self.accuracy.get(key)
                 && let Err(e) = self.store.provider_accuracy_upsert(row).await
@@ -409,6 +419,9 @@ impl WindowIngest {
         samples: &[f64],
         now: DateTime<Utc>,
     ) {
+        if !self.accuracy_loaded {
+            return;
+        }
         let key = (provider.clone(), channel.clone());
         for &sample in samples {
             let row = next_accuracy_row(self.accuracy.get(&key), provider, channel, sample, now);

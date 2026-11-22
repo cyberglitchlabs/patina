@@ -209,3 +209,29 @@ async fn a_failed_merge_feeds_no_hindsight() {
     assert_eq!(done.merge_errors, 1);
     assert!(inner.provider_accuracy_load_all().await.unwrap().is_empty());
 }
+
+/// If the stored averages could not be read at the start of the tick, the
+/// tick's fresh averages must not be written over them.
+#[tokio::test]
+async fn unreadable_accuracy_is_not_overwritten_at_finish() {
+    let inner = store().await;
+    let first = window(vec![wcco()], vec![obs("a", 600, 660, "News", -180)]);
+    let later = window(vec![wcco()], vec![obs("a", 610, 670, "News", -60)]);
+    for w in [&first, &later] {
+        let mut tick = WindowIngest::begin(inner.clone(), &Weights::default(), None).await;
+        ingest_window(&mut tick, w, NOW).await;
+        tick.finish().await;
+    }
+    let before = inner.provider_accuracy_load_all().await.unwrap();
+    assert_eq!(before.len(), 1, "{before:?}");
+
+    let failing = Arc::new(FailingStore::new(inner.clone()));
+    failing.fail_accuracy_load.store(true, Ordering::SeqCst);
+    let third = window(vec![wcco()], vec![obs("a", 612, 672, "News", 0)]);
+    let mut tick = WindowIngest::begin(failing.clone(), &Weights::default(), None).await;
+    let done = ingest_window(&mut tick, &third, NOW).await;
+    assert!(done.stored, "merging still works without accuracy");
+    tick.finish().await;
+
+    assert_eq!(inner.provider_accuracy_load_all().await.unwrap(), before);
+}

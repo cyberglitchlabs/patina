@@ -29,6 +29,8 @@ pub struct FailingStore {
     /// `upsert_channels` fails while this is set (the canonical channels of a
     /// response cannot be stored).
     pub fail_channel_storage: AtomicBool,
+    /// `provider_accuracy_load_all` fails while this is set.
+    pub fail_accuracy_load: AtomicBool,
     /// `window_state_get` fails while this is set.
     pub fail_window_state_get: AtomicBool,
     /// `bad_window_is_bad` (one of the fetch layer's gates before a request)
@@ -61,6 +63,7 @@ impl FailingStore {
             fail_apply_channel: Mutex::new(None),
             apply_failures: AtomicUsize::new(0),
             fail_channel_storage: AtomicBool::new(false),
+            fail_accuracy_load: AtomicBool::new(false),
             fail_window_state_get: AtomicBool::new(false),
             fail_bad_window_check: AtomicBool::new(false),
             fail_stats: AtomicBool::new(false),
@@ -249,6 +252,9 @@ impl Store for FailingStore {
     }
 
     async fn provider_accuracy_load_all(&self) -> Result<Vec<AccuracyRow>> {
+        if self.fail_accuracy_load.load(Ordering::SeqCst) {
+            anyhow::bail!("injected provider_accuracy_load_all failure");
+        }
         self.inner.provider_accuracy_load_all().await
     }
 
