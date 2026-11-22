@@ -1,0 +1,5 @@
+[advisories]
+# chrono and chrono-tz were marked unmaintained on 2026-09-14 (no known
+# vulnerability). Same reasons and ids as in deny.toml; keep the two in step.
+# RUSTSEC-2026-0459 (libsqlite3-sys): see the reason in deny.toml.
+ignore = ["RUSTSEC-2026-0543", "RUSTSEC-2026-0555", "RUSTSEC-2026-0459"]

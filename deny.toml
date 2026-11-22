@@ -20,8 +20,19 @@ unmaintained = "all"
 # A yanked crate version means its author withdrew it, usually for a bug.
 yanked = "deny"
 # Add RUSTSEC ids here (with a reason) only for advisories that cannot affect
-# us and cannot be fixed yet. Currently none.
-ignore = []
+# us and cannot be fixed yet.
+ignore = [
+    # chrono and chrono-tz were marked unmaintained on 2026-09-14. No known
+    # vulnerability; replacing them touches nearly every module. Revisit
+    # when a maintained successor is chosen, or if a vulnerability appears.
+    "RUSTSEC-2026-0543",
+    "RUSTSEC-2026-0555",
+    # libsqlite3-sys 0.37 bundles a SQLite with a WAL bug that can disclose
+    # uninitialized memory (local attack vector). sqlx 0.9.1 still pins 0.37;
+    # Patina's database file is read only by its own process. Remove when
+    # sqlx uses libsqlite3-sys 0.39 or later.
+    "RUSTSEC-2026-0459",
+]
 
 [licenses]
 # Licenses a dependency may use. An expression like "MIT OR Apache-2.0" passes
