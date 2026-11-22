@@ -1,8 +1,11 @@
-//! Storage interface. The rest of the program only talks to the `Store` trait;
-//! each database (SQLite and PostgreSQL) implements it in its own file.
+//! Storage interface. The rest of the program only talks to the `Store` trait.
+//! One generic `SqlStore<D>` (`sql.rs`) implements it for both databases; the
+//! `Backend` impls in `sqlite.rs` and `postgres.rs` hold what differs.
 
+mod dialect;
 pub mod postgres;
 pub(crate) mod rawbody;
+pub mod sql;
 pub mod sqlite;
 
 use std::sync::Arc;
@@ -504,9 +507,9 @@ pub(crate) fn day_key(day: NaiveDate) -> String {
 /// The backend is chosen from the URL scheme.
 pub async fn connect(database_url: &str) -> Result<Arc<dyn Store>> {
     let store: Arc<dyn Store> = if database_url.starts_with("sqlite:") {
-        Arc::new(sqlite::SqliteStore::open(database_url).await?)
+        Arc::new(sql::SqlStore::<sqlx::Sqlite>::open(database_url).await?)
     } else if database_url.starts_with("postgres://") || database_url.starts_with("postgresql://") {
-        Arc::new(postgres::PostgresStore::open(database_url).await?)
+        Arc::new(sql::SqlStore::<sqlx::Postgres>::open(database_url).await?)
     } else {
         let scheme = database_url.split(':').next().unwrap_or("");
         bail!("unsupported database URL scheme {scheme:?} (supported: sqlite, postgres)");
