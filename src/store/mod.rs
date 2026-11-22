@@ -2,6 +2,7 @@
 //! each database (SQLite and PostgreSQL) implements it in its own file.
 
 pub mod postgres;
+pub(crate) mod rawbody;
 pub mod sqlite;
 
 use std::sync::Arc;
