@@ -247,6 +247,56 @@ fn offsets_correct_across_us_fall_back_2026_11_01() {
 }
 
 #[test]
+fn offsets_are_right_for_zones_off_the_whole_hour_and_in_the_south() {
+    // (zone, instant, local time and offset it must render as)
+    let cases = [
+        (
+            "Asia/Kolkata",
+            utc(2026, 11, 1, 6, 30, 0),
+            "20261101120000 +0530",
+        ),
+        (
+            "Asia/Kathmandu",
+            utc(2026, 11, 1, 6, 30, 0),
+            "20261101121500 +0545",
+        ),
+        (
+            "America/St_Johns",
+            utc(2026, 1, 15, 12, 0, 0),
+            "20260115083000 -0330",
+        ),
+        // Southern hemisphere: daylight time in November, standard in June.
+        (
+            "Australia/Sydney",
+            utc(2026, 11, 1, 6, 30, 0),
+            "20261101173000 +1100",
+        ),
+        (
+            "Australia/Sydney",
+            utc(2026, 6, 1, 6, 30, 0),
+            "20260601163000 +1000",
+        ),
+        // Lord Howe shifts by 30 minutes, not an hour.
+        (
+            "Australia/Lord_Howe",
+            utc(2026, 1, 1, 0, 0, 0),
+            "20260101110000 +1100",
+        ),
+        (
+            "Australia/Lord_Howe",
+            utc(2026, 7, 1, 0, 0, 0),
+            "20260701103000 +1030",
+        ),
+    ];
+    for (zone, instant, expected) in cases {
+        let tz: Tz = zone.parse().unwrap();
+        let s = slot("WCCODT.us", instant, instant + TimeDelta::minutes(30), "T");
+        let xml = render(&[chan("WCCODT.us", "4.1", "WCCO-DT")], &[s], tz);
+        assert_eq!(programme_attrs(&xml)[0].0, expected, "{zone} at {instant}");
+    }
+}
+
+#[test]
 fn spring_forward_2027_03_14_skips_the_02_00_hour() {
     // 07:59:59Z is 01:59:59 CST (-0600); 08:00Z is 03:00:00 CDT (-0500).
     let xml = one_slot_xml(slot(

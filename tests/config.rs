@@ -165,6 +165,38 @@ fn bad_env_values_name_the_variable() {
 }
 
 #[test]
+fn timezone_takes_iana_names_from_env_and_toml() {
+    for name in ["Europe/London", "Asia/Kolkata", "UTC"] {
+        let c = Config::load(&env(&[("PATINA_TIMEZONE", name)]), None).unwrap();
+        assert_eq!(c.timezone.name(), name);
+        let c = Config::load(&env(&[]), Some(&format!("timezone = \"{name}\""))).unwrap();
+        assert_eq!(c.timezone.name(), name);
+    }
+}
+
+#[test]
+fn unknown_timezone_is_rejected_with_a_hint_and_the_source() {
+    for bad in ["Mars/Base", "Chicago"] {
+        let err = Config::load(&env(&[("PATINA_TIMEZONE", bad)]), None).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("PATINA_TIMEZONE") && msg.contains(bad),
+            "got: {msg}"
+        );
+        assert!(
+            msg.contains("IANA"),
+            "should hint at the format, got: {msg}"
+        );
+    }
+    let err = Config::load(&env(&[]), Some("timezone = \"Mars/Base\"")).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("timezone") && msg.contains("Mars/Base"),
+        "got: {msg}"
+    );
+}
+
+#[test]
 fn bad_weights_are_rejected() {
     let err = Config::load(&HashMap::new(), Some("[scoring]\nfreshness = -1.0\n")).unwrap_err();
     assert!(err.to_string().contains("freshness"), "got: {err}");
