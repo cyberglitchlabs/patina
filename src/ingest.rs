@@ -260,6 +260,9 @@ pub struct WindowIngest {
     /// which rows `finish` has to write.
     accuracy: BTreeMap<(ProviderId, ChannelId), AccuracyRow>,
     dirty: BTreeSet<(ProviderId, ChannelId)>,
+    /// False when the stored averages could not be read: `finish` then writes
+    /// nothing, so fresh averages never replace stored ones.
+    accuracy_loaded: bool,
     channels_seen: BTreeSet<ChannelId>,
 }
 
@@ -272,13 +275,13 @@ impl WindowIngest {
         weights: &Weights,
         feed_generation: Option<Arc<AtomicU64>>,
     ) -> Self {
-        let acc_rows = store
-            .provider_accuracy_load_all()
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %format!("{e:#}"), "cannot load accuracy; using neutral values");
-                Vec::new()
-            });
+        let (acc_rows, accuracy_loaded) = match store.provider_accuracy_load_all().await {
+            Ok(rows) => (rows, true),
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "cannot load accuracy; using neutral values and keeping stored averages");
+                (Vec::new(), false)
+            }
+        };
         let rel_rows = store
             .provider_reliability_load_all()
             .await
@@ -296,6 +299,7 @@ impl WindowIngest {
                 .map(|r| ((r.provider.clone(), r.channel.clone()), r))
                 .collect(),
             dirty: BTreeSet::new(),
+            accuracy_loaded,
             channels_seen: BTreeSet::new(),
         }
     }
@@ -387,10 +391,18 @@ impl WindowIngest {
     }
 
     /// Write the hindsight averages changed during the tick (one write per
-    /// provider and channel). Returns how many distinct channels the tick's
+    /// provider and channel), unless the stored averages could not be read
+    /// in `begin`. Returns how many distinct channels the tick's
     /// responses listed.
     pub async fn finish(self) -> usize {
-        for key in &self.dirty {
+        // Without the stored averages the in-memory ones start from nothing;
+        // writing them would replace good history with a single sample.
+        let writes = if self.accuracy_loaded {
+            self.dirty.clone()
+        } else {
+            BTreeSet::new()
+        };
+        for key in &writes {
             if let Some(row) = self.accuracy.get(key)
                 && let Err(e) = self.store.provider_accuracy_upsert(row).await
             {
