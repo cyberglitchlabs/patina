@@ -1,9 +1,9 @@
 //! Domain types shared by the whole program. Plain data, plus the two rules
 //! that make canonical channels (`canonical_id`, `canonical_channel`).
 
+use jiff::Timestamp;
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::provider::ProviderChannel;
@@ -35,8 +35,8 @@ pub struct CanonicalChannel {
 pub struct Observation {
     pub provider: ProviderId,
     pub channel: ChannelId,
-    pub start: DateTime<Utc>,
-    pub end: DateTime<Utc>,
+    pub start: Timestamp,
+    pub end: Timestamp,
     pub title: String,
     pub subtitle: Option<String>,
     pub description: Option<String>,
@@ -45,7 +45,7 @@ pub struct Observation {
     pub episode: Option<u32>,
     pub rating: Option<String>,
     pub genres: Vec<String>,
-    pub fetched_at: DateTime<Utc>,
+    pub fetched_at: Timestamp,
 }
 
 /// How a slot's score was made up: signal name -> value in 0..1.
@@ -58,8 +58,8 @@ pub struct ScoreBreakdown(pub BTreeMap<String, f64>);
 pub struct MasterSlot {
     pub id: SlotId,
     pub channel: ChannelId,
-    pub start: DateTime<Utc>,
-    pub end: DateTime<Utc>,
+    pub start: Timestamp,
+    pub end: Timestamp,
     pub title: String,
     pub subtitle: Option<String>,
     pub description: Option<String>,
@@ -72,7 +72,7 @@ pub struct MasterSlot {
     pub winner: ProviderId,
     pub score: f64,
     pub breakdown: ScoreBreakdown,
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
 }
 
 /// The one place canonical channel ids are made: uppercase the call sign,

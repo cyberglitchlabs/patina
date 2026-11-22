@@ -1,10 +1,10 @@
 //! Gracenote (tvlistings.gracenote.com) provider.
 
+use jiff::Timestamp;
 use std::collections::HashSet;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use url::Url;
@@ -107,13 +107,13 @@ impl Provider for GracenoteProvider {
     async fn fetch_window(
         &self,
         lineup: &LineupCfg,
-        window_start: DateTime<Utc>,
+        window_start: Timestamp,
     ) -> Result<RawResponse, FetchError> {
         let url = self
             .base_url
             .join("api/grid")
             .map_err(|e| FetchError::Fatal(format!("bad base url: {e}")))?;
-        let time = window_start.timestamp().to_string();
+        let time = window_start.as_second().to_string();
         // Errors are logged upstream; `without_url` keeps the request URL
         // (with the lineup's query string) out of the logs.
         let resp = self
@@ -154,12 +154,7 @@ impl Provider for GracenoteProvider {
         Ok(RawResponse { status, body })
     }
 
-    fn parse(
-        &self,
-        _lineup: &LineupCfg,
-        raw: &RawResponse,
-        fetched_at: DateTime<Utc>,
-    ) -> ParsedWindow {
+    fn parse(&self, _lineup: &LineupCfg, raw: &RawResponse, fetched_at: Timestamp) -> ParsedWindow {
         let grid: Grid = match serde_json::from_slice(&raw.body) {
             Ok(g) => g,
             Err(e) => {
@@ -229,10 +224,8 @@ impl Provider for GracenoteProvider {
     }
 }
 
-fn parse_time(s: &Option<String>) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s.as_deref()?)
-        .ok()
-        .map(|t| t.with_timezone(&Utc))
+fn parse_time(s: &Option<String>) -> Option<Timestamp> {
+    s.as_deref()?.parse::<Timestamp>().ok()
 }
 
 /// `Some(trimmed)` unless the value is absent or only whitespace.

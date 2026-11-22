@@ -2,7 +2,6 @@
 
 mod common;
 
-use chrono::{TimeZone, Utc};
 use common::run_contract;
 use patina::model::ProviderId;
 use patina::store::connect;
@@ -37,7 +36,10 @@ async fn sqlite_raw_bodies_are_stored_gzipped() {
     let url = format!("sqlite://{}?mode=rwc", dir.path().join("test.db").display());
     let store = connect(&url).await.unwrap();
     let body = b"{\"channels\":[]}".repeat(1000);
-    let t = Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap();
+    let t = jiff::civil::datetime(2026, 11, 1, 0, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
     store
         .raw_put(&ProviderId("gn".into()), "ota", t, t, &body)
         .await

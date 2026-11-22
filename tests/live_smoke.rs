@@ -11,9 +11,9 @@
 //!   PATINA_SMOKE_POSTAL_CODE (default 55401)
 //!   PATINA_SMOKE_LINEUP_ID   (default USA-OTA55401)
 
+use jiff::{SignedDuration, Timestamp};
 use std::time::Duration;
 
-use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 use patina::config::LineupCfg;
 use patina::provider::Provider;
 use patina::provider::gracenote::{DEFAULT_BASE_URL, GracenoteProvider, http_client};
@@ -26,9 +26,9 @@ fn setting(name: &str, default: &str) -> String {
 }
 
 /// Start of the current 6-hour block (UTC), a valid window start.
-fn current_window_start(now: DateTime<Utc>) -> DateTime<Utc> {
-    let hours = (now.timestamp() / 3600 / 6) * 6;
-    Utc.timestamp_opt(hours * 3600, 0).unwrap()
+fn current_window_start(now: Timestamp) -> Timestamp {
+    let hours = (now.as_second() / 3600 / 6) * 6;
+    Timestamp::new(hours * 3600, 0).unwrap()
 }
 
 #[tokio::test]
@@ -44,8 +44,11 @@ async fn live_gracenote_lineup_is_parseable() {
     let base = url::Url::parse(DEFAULT_BASE_URL).unwrap();
     let provider = GracenoteProvider::new(client, base);
 
-    let first = current_window_start(Utc::now());
-    for (i, start) in [first, first + TimeDelta::hours(6)].into_iter().enumerate() {
+    let first = current_window_start(Timestamp::now());
+    for (i, start) in [first, first + SignedDuration::from_hours(6)]
+        .into_iter()
+        .enumerate()
+    {
         if i > 0 {
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
@@ -54,7 +57,7 @@ async fn live_gracenote_lineup_is_parseable() {
             .await
             .unwrap_or_else(|e| panic!("window {i}: fetch failed: {e}"));
         assert_eq!(raw.status, 200, "window {i}: HTTP status");
-        let parsed = provider.parse(&lineup, &raw, Utc::now());
+        let parsed = provider.parse(&lineup, &raw, Timestamp::now());
         assert_eq!(parsed.parse_error, None, "window {i}: response must parse");
         assert!(
             parsed.channels.len() >= 10,

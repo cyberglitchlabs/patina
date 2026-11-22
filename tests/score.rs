@@ -3,11 +3,11 @@
 
 mod common;
 
+use jiff::{SignedDuration, Timestamp};
 use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 use std::sync::Arc;
 
-use chrono::{DateTime, TimeDelta, Utc};
 use common::merge_util::{ch, cover, obs, pid, t};
 use patina::config::{Config, Weights};
 use patina::merge::{SlotFields, SlotWithObservations, StoredObservation, plan_merge};
@@ -25,11 +25,11 @@ fn in_unit(v: f64) -> bool {
     v.is_finite() && (0.0..=1.0).contains(&v)
 }
 
-fn mins(m: i64) -> TimeDelta {
-    TimeDelta::minutes(m)
+fn mins(m: i64) -> SignedDuration {
+    SignedDuration::from_mins(m)
 }
 
-fn r(start: i64, end: i64) -> Range<DateTime<Utc>> {
+fn r(start: i64, end: i64) -> Range<Timestamp> {
     t(start)..t(end)
 }
 
@@ -57,7 +57,7 @@ fn scorer_with(weights: Weights, snap: AccuracySnapshot) -> WeightedScorer {
 }
 
 /// Score one observation by inserting it into an empty guide.
-fn score_one(o: &Observation, scorer: &WeightedScorer, now: DateTime<Utc>) -> SlotFields {
+fn score_one(o: &Observation, scorer: &WeightedScorer, now: Timestamp) -> SlotFields {
     let plan = plan_merge(
         &[],
         std::slice::from_ref(o),
@@ -86,14 +86,14 @@ fn rich(start: i64, end: i64, fetched: i64) -> Observation {
 #[test]
 fn each_signal_is_clamped_to_0_1() {
     let deltas = [
-        TimeDelta::MIN,
-        TimeDelta::days(-10_000),
+        SignedDuration::MIN,
+        SignedDuration::from_hours(24 * (-10_000)),
         mins(-60),
-        TimeDelta::zero(),
-        TimeDelta::seconds(1),
+        SignedDuration::ZERO,
+        SignedDuration::from_secs(1),
         mins(360),
-        TimeDelta::days(100_000),
-        TimeDelta::MAX,
+        SignedDuration::from_hours(24 * 100_000),
+        SignedDuration::MAX,
     ];
     for a in deltas {
         for h in deltas {
@@ -115,8 +115,8 @@ fn each_signal_is_clamped_to_0_1() {
     }
 
     // Ranges: zero length, reversed, the whole representable time line.
-    let min = DateTime::<Utc>::MIN_UTC;
-    let max = DateTime::<Utc>::MAX_UTC;
+    let min = Timestamp::MIN;
+    let max = Timestamp::MAX;
     let ranges = [
         r(0, 60),
         r(0, 0),
@@ -244,7 +244,9 @@ fn freshness_decreases_with_age() {
     // 6 hours old about a programme airing soon: half-life reached.
     assert!((freshness(mins(360), horizon) - 0.5).abs() < 1e-12);
     // Data about a programme days away goes stale more slowly.
-    assert!(freshness(mins(360), TimeDelta::days(3)) > freshness(mins(360), horizon));
+    assert!(
+        freshness(mins(360), SignedDuration::from_hours(24 * 3)) > freshness(mins(360), horizon)
+    );
     // Clock skew (fetched "in the future") is treated as just fetched.
     assert_eq!(freshness(mins(-30), horizon), 1.0);
 }
@@ -265,13 +267,15 @@ fn timeline_sanity_penalizes_implausible_duration_and_odd_boundaries() {
     assert!(nine_hours <= 0.3, "9-hour episode: {nine_hours}");
     assert_eq!(timeline_sanity(&r(60, 60)), 0.0, "0-minute episode");
     assert_eq!(timeline_sanity(&r(60, 0)), 0.0, "negative length");
-    let thirty_seconds = timeline_sanity(&(t(0)..t(0) + TimeDelta::seconds(30)));
+    let thirty_seconds = timeline_sanity(&(t(0)..t(0) + SignedDuration::from_secs(30)));
     assert!(thirty_seconds <= 0.3, "30-second episode: {thirty_seconds}");
 
     // Off-minute boundaries are penalised only mildly, start and end alike.
-    let odd_start = timeline_sanity(&(t(60) + TimeDelta::seconds(30)..t(120)));
-    let odd_end = timeline_sanity(&(t(60)..t(120) + TimeDelta::seconds(5)));
-    let both = timeline_sanity(&(t(60) + TimeDelta::seconds(30)..t(120) + TimeDelta::seconds(5)));
+    let odd_start = timeline_sanity(&(t(60) + SignedDuration::from_secs(30)..t(120)));
+    let odd_end = timeline_sanity(&(t(60)..t(120) + SignedDuration::from_secs(5)));
+    let both = timeline_sanity(
+        &(t(60) + SignedDuration::from_secs(30)..t(120) + SignedDuration::from_secs(5)),
+    );
     assert!((0.9..1.0).contains(&odd_start), "{odd_start}");
     assert!((0.9..1.0).contains(&odd_end), "{odd_end}");
     assert!(both < odd_start && both > 0.85, "{both}");
@@ -408,7 +412,7 @@ fn stability_drops_with_flip_flopping() {
     assert_eq!(stability_observations(t(0), t(359)), 1);
     assert_eq!(stability_observations(t(0), t(360)), 2);
     assert_eq!(stability_observations(t(0), t(-60)), 1, "clock skew");
-    assert_eq!(stability_observations(DateTime::UNIX_EPOCH, t(0)), 0);
+    assert_eq!(stability_observations(Timestamp::UNIX_EPOCH, t(0)), 0);
 }
 
 #[test]
@@ -451,8 +455,8 @@ fn hindsight_sample_rewards_agreement_and_penalises_drift() {
     assert_eq!(hindsight_sample(&a, &obs("a", 0, 60, "the  news", 60)), 1.0);
     // Within the 60-second tolerance.
     let mut near = a.clone();
-    near.start += TimeDelta::seconds(30);
-    near.end += TimeDelta::seconds(30);
+    near.start += SignedDuration::from_secs(30);
+    near.end += SignedDuration::from_secs(30);
     assert_eq!(hindsight_sample(&a, &near), 1.0);
     // Halfway: 15 minutes moved in total (start + end).
     let half = hindsight_sample(&a, &obs("a", 5, 70, "The News", 60));
@@ -550,7 +554,7 @@ fn accuracy_snapshot_supplies_provider_stats() {
 // ---------------------------------------------------------------------------
 
 /// The signal values the scorer must produce for a lone, newly seen `o`.
-fn expected_signals(o: &Observation, now: DateTime<Utc>) -> HashMap<&'static str, f64> {
+fn expected_signals(o: &Observation, now: Timestamp) -> HashMap<&'static str, f64> {
     let acc = ProviderChannelAccuracy {
         ema: 0.8,
         samples: 4,
@@ -707,7 +711,7 @@ fn scorer_output_is_deterministic_for_same_inputs() {
 }
 
 /// The stored slot and its one observation by "a" with the given first_seen.
-fn stored(o: &Observation, first_seen: DateTime<Utc>) -> SlotWithObservations {
+fn stored(o: &Observation, first_seen: Timestamp) -> SlotWithObservations {
     SlotWithObservations {
         slot: MasterSlot {
             id: SlotId(1),
@@ -740,7 +744,7 @@ fn unknown_first_seen_is_neutral_not_maximal() {
     let old = obs("a", 60, 120, "News", -600);
     let new = obs("a", 60, 120, "News", -60);
     let scorer = scorer_with(Weights::default(), snapshot());
-    let run = |first_seen: DateTime<Utc>| {
+    let run = |first_seen: Timestamp| {
         let existing = [stored(&old, first_seen)];
         let plan = plan_merge(
             &existing,
@@ -753,7 +757,7 @@ fn unknown_first_seen_is_neutral_not_maximal() {
         plan.updates[0].1.clone()
     };
     // Rows migrated from before first_seen existed carry 0 (1970): unknown.
-    let unknown = run(DateTime::UNIX_EPOCH);
+    let unknown = run(Timestamp::UNIX_EPOCH);
     assert_eq!(unknown.breakdown.0["stability"], 0.5);
     // Freshness comes from fetched_at, not from the (unknown) first-seen age.
     assert_eq!(
@@ -761,7 +765,7 @@ fn unknown_first_seen_is_neutral_not_maximal() {
         freshness(t(0) - new.fetched_at, new.start - t(0))
     );
     // Even earlier than 1970 is unknown, not "seen for a very long time".
-    let before = run(DateTime::UNIX_EPOCH - TimeDelta::days(1));
+    let before = run(Timestamp::UNIX_EPOCH - SignedDuration::from_hours(24));
     assert_eq!(before.breakdown.0["stability"], 0.5);
     // A known first-seen with no changes is fully stable, so it scores higher.
     let known = run(old.fetched_at);

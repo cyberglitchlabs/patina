@@ -30,13 +30,13 @@ pub mod breaker;
 mod budget;
 pub mod limiter;
 
+use jiff::Timestamp;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
 
 pub use crate::clock::{Clock, SystemClock};
 use crate::config::LineupCfg;
@@ -163,13 +163,13 @@ pub enum SkipReason {
     /// Today's request budget for this provider is used up. No request sent.
     BudgetExhausted,
     /// Too many failures; no requests until `until`. No request sent.
-    CircuitOpen { until: DateTime<Utc> },
+    CircuitOpen { until: Timestamp },
     /// The provider rejected this window recently (HTTP 400). No request sent.
     KnownBadWindow,
     /// Holding off this provider until the given time, because of our own
     /// backoff after an earlier failure (or an earlier `Retry-After`). No
     /// request sent: this says nothing new about the provider.
-    BackingOffUntil(DateTime<Utc>),
+    BackingOffUntil(Timestamp),
     /// The store could not be read or written at one of the gates, so we
     /// cannot prove the request is allowed and do not send it ("fail
     /// closed"). No request sent: this is OUR problem, not the provider's.
@@ -178,7 +178,7 @@ pub enum SkipReason {
     /// requests"). Backoff and circuit already counted it as a failure; no
     /// request goes out before `not_before` (the larger of our own backoff
     /// and the server's `Retry-After`).
-    RateLimited { not_before: DateTime<Utc> },
+    RateLimited { not_before: Timestamp },
     /// The request was sent and failed (or could not be prepared).
     /// `FetchError::BadWindow` is the provider's HTTP 400 for this window;
     /// `FetchError::RateLimited` never appears here (see `RateLimited`).
@@ -193,7 +193,7 @@ pub struct ProviderState {
     pub circuit: CircuitState,
     pub budget_used: u32,
     pub budget_limit: u32,
-    pub last_success: Option<DateTime<Utc>>,
+    pub last_success: Option<Timestamp>,
     pub last_error: Option<String>,
     pub consecutive_failures: u32,
 }
@@ -275,7 +275,7 @@ impl FetchLayer {
         &self,
         provider: &ProviderId,
         lineup: &LineupCfg,
-        window_start: DateTime<Utc>,
+        window_start: Timestamp,
     ) -> FetchOutcome {
         let Some(entry) = self.entries.get(provider) else {
             tracing::warn!(provider = %provider.0, "fetch for unknown provider");
@@ -339,7 +339,7 @@ impl FetchLayer {
         entry: &Entry,
         limiter: &mut Limiter,
         lineup: &LineupCfg,
-        window_start: DateTime<Utc>,
+        window_start: Timestamp,
     ) -> FetchOutcome {
         let pid = entry.provider.id();
         let store = self.store.as_ref();
@@ -423,8 +423,8 @@ impl FetchLayer {
         &self,
         entry: &Entry,
         lineup: &LineupCfg,
-        window_start: DateTime<Utc>,
-        done_at: DateTime<Utc>,
+        window_start: Timestamp,
+        done_at: Timestamp,
         result: Result<RawResponse, FetchError>,
     ) -> FetchOutcome {
         let pid = entry.provider.id();
@@ -525,7 +525,7 @@ impl FetchLayer {
         &self,
         entry: &Entry,
         lineup: &LineupCfg,
-        window_start: DateTime<Utc>,
+        window_start: Timestamp,
     ) -> Option<ParsedWindow> {
         let pid = entry.provider.id();
         let now = self.clock.now();
@@ -573,7 +573,7 @@ impl FetchLayer {
         Ok(slot.get_or_insert(loaded).clone())
     }
 
-    async fn record_success(&self, entry: &Entry, now: DateTime<Utc>) {
+    async fn record_success(&self, entry: &Entry, now: Timestamp) {
         let snapshot = {
             let mut slot = entry.state.lock().unwrap();
             let st = slot.get_or_insert_with(ProviderFetchState::default);
@@ -589,10 +589,10 @@ impl FetchLayer {
     async fn record_failure(
         &self,
         entry: &Entry,
-        now: DateTime<Utc>,
+        now: Timestamp,
         failure: Failure,
         message: &str,
-    ) -> DateTime<Utc> {
+    ) -> Timestamp {
         let policy = Policy {
             backoff_base: self.cfg.backoff_base,
             backoff_max: self.cfg.backoff_max,

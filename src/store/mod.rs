@@ -8,13 +8,14 @@ pub(crate) mod rawbody;
 pub mod sql;
 pub mod sqlite;
 
+use jiff::Timestamp;
+use jiff::civil::Date;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::{DateTime, NaiveDate, Utc};
 
 use crate::channels::TunerChannel;
 use crate::merge::{MergeApplied, MergePlan, SlotRef, SlotWithObservations};
@@ -24,7 +25,7 @@ use crate::provider::ProviderChannel;
 /// One cached raw provider response (already decompressed).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawEntry {
-    pub fetched_at: DateTime<Utc>,
+    pub fetched_at: Timestamp,
     pub body: Bytes,
 }
 
@@ -35,11 +36,11 @@ pub struct ProviderFetchState {
     /// Failed attempts in a row; reset by a success.
     pub consecutive_failures: u32,
     /// Do not send a request before this time (backoff or `Retry-After`).
-    pub not_before: Option<DateTime<Utc>>,
+    pub not_before: Option<Timestamp>,
     /// Set while the circuit breaker is open: no request before this time,
     /// then one probe is allowed. Cleared when a request succeeds.
-    pub circuit_open_until: Option<DateTime<Utc>>,
-    pub last_success: Option<DateTime<Utc>>,
+    pub circuit_open_until: Option<Timestamp>,
+    pub last_success: Option<Timestamp>,
     pub last_error: Option<String>,
 }
 
@@ -53,7 +54,7 @@ pub struct AccuracyRow {
     pub ema: f64,
     /// How many samples went into `ema` (0 means "no data yet").
     pub samples: u32,
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
 }
 
 /// A provider's recent fetch outcomes (table `provider_reliability`): a
@@ -64,7 +65,7 @@ pub struct ReliabilityRow {
     pub success: u32,
     pub total: u32,
     /// When the current counting window began.
-    pub window_start: DateTime<Utc>,
+    pub window_start: Timestamp,
 }
 
 /// One scored observation, kept so scoring quality can be analysed later
@@ -74,7 +75,7 @@ pub struct ScoreHistoryRow {
     pub slot: SlotId,
     pub provider: ProviderId,
     pub channel: ChannelId,
-    pub scored_at: DateTime<Utc>,
+    pub scored_at: Timestamp,
     pub score: f64,
     pub breakdown: ScoreBreakdown,
 }
@@ -85,12 +86,12 @@ pub struct ScoreHistoryRow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowState {
     /// Start of the 6-hour window (on the UTC 6-hour grid).
-    pub window_start: DateTime<Utc>,
+    pub window_start: Timestamp,
     /// When the window was last fetched and merged successfully; `None` if
     /// it never was.
-    pub last_success: Option<DateTime<Utc>>,
+    pub last_success: Option<Timestamp>,
     /// When a request for it last got an answer (success or failure).
-    pub last_attempt: DateTime<Utc>,
+    pub last_attempt: Timestamp,
     /// What went wrong on the last attempt; `None` if it succeeded.
     pub last_failure: Option<WindowFailure>,
 }
@@ -169,7 +170,7 @@ pub struct GuideStats {
     /// Slots with `end > now`.
     pub future_slots_total: u64,
     /// The latest slot end of any slot; `None` for an empty guide.
-    pub newest_slot_end: Option<DateTime<Utc>>,
+    pub newest_slot_end: Option<Timestamp>,
     /// How many distinct channels have at least one future slot.
     pub channels_with_future_slots: u64,
     /// The channels counted by `channels_with_future_slots`, sorted. Coverage
@@ -194,7 +195,7 @@ pub trait Store: Send + Sync {
     async fn ping(&self) -> Result<()>;
 
     /// Aggregate facts about the master guide as of `now` (see `GuideStats`).
-    async fn guide_stats(&self, now: DateTime<Utc>) -> Result<GuideStats>;
+    async fn guide_stats(&self, now: Timestamp) -> Result<GuideStats>;
 
     /// Insert channels, or update name/number/call sign of ones whose id exists.
     async fn upsert_channels(&self, channels: &[CanonicalChannel]) -> Result<()>;
@@ -210,8 +211,8 @@ pub trait Store: Send + Sync {
     async fn slots(
         &self,
         channel: ChannelId,
-        from: DateTime<Utc>,
-        to: DateTime<Utc>,
+        from: Timestamp,
+        to: Timestamp,
     ) -> Result<Vec<MasterSlot>>;
 
     /// Like `slots`, but each slot comes with every provider's observation of
@@ -220,8 +221,8 @@ pub trait Store: Send + Sync {
     async fn slots_with_observations(
         &self,
         channel: &ChannelId,
-        from: DateTime<Utc>,
-        to: DateTime<Utc>,
+        from: Timestamp,
+        to: Timestamp,
     ) -> Result<Vec<SlotWithObservations>>;
 
     /// Write a merge plan to the master guide in ONE transaction: either all
@@ -243,19 +244,19 @@ pub trait Store: Send + Sync {
     // ---- Fetch layer state (see src/fetch). ----
 
     /// Requests already made to `provider` on UTC day `day` (0 if none).
-    async fn budget_used(&self, provider: &ProviderId, day: NaiveDate) -> Result<u32>;
+    async fn budget_used(&self, provider: &ProviderId, day: Date) -> Result<u32>;
 
     /// Atomically add `n` to the day's count and return the new total. Safe
     /// under concurrency: two callers adding 1 at once always end at +2.
-    async fn budget_add(&self, provider: &ProviderId, day: NaiveDate, n: u32) -> Result<u32>;
+    async fn budget_add(&self, provider: &ProviderId, day: Date, n: u32) -> Result<u32>;
 
     /// Remember that the provider rejected this window, until `until`.
     async fn bad_window_mark(
         &self,
         provider: &ProviderId,
         lineup: &str,
-        window_start: DateTime<Utc>,
-        until: DateTime<Utc>,
+        window_start: Timestamp,
+        until: Timestamp,
     ) -> Result<()>;
 
     /// Whether the window is still remembered as bad at time `now`.
@@ -263,8 +264,8 @@ pub trait Store: Send + Sync {
         &self,
         provider: &ProviderId,
         lineup: &str,
-        window_start: DateTime<Utc>,
-        now: DateTime<Utc>,
+        window_start: Timestamp,
+        now: Timestamp,
     ) -> Result<bool>;
 
     /// Store a raw response body. The store compresses it (gzip); callers
@@ -273,8 +274,8 @@ pub trait Store: Send + Sync {
         &self,
         provider: &ProviderId,
         lineup: &str,
-        window_start: DateTime<Utc>,
-        fetched_at: DateTime<Utc>,
+        window_start: Timestamp,
+        fetched_at: Timestamp,
         body: &[u8],
     ) -> Result<()>;
 
@@ -284,9 +285,9 @@ pub trait Store: Send + Sync {
         &self,
         provider: &ProviderId,
         lineup: &str,
-        window_start: DateTime<Utc>,
+        window_start: Timestamp,
         max_age: Duration,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<RawEntry>>;
 
     /// Saved backoff/circuit state for a provider, if any was ever saved.
@@ -308,7 +309,7 @@ pub trait Store: Send + Sync {
         &self,
         source_key: &str,
         channels: &[TunerChannel],
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<()>;
 
     /// The last saved list (in its original order) and when it was saved;
@@ -316,7 +317,7 @@ pub trait Store: Send + Sync {
     async fn load_tuner_channels(
         &self,
         source_key: &str,
-    ) -> Result<Option<(Vec<TunerChannel>, DateTime<Utc>)>>;
+    ) -> Result<Option<(Vec<TunerChannel>, Timestamp)>>;
 
     // ---- Scoring (see src/score.rs). ----
 
@@ -335,7 +336,7 @@ pub trait Store: Send + Sync {
         &self,
         provider: &ProviderId,
         success: bool,
-        at: DateTime<Utc>,
+        at: Timestamp,
     ) -> Result<()>;
 
     /// Every provider's reliability counter, ordered by provider.
@@ -348,11 +349,7 @@ pub trait Store: Send + Sync {
     /// oldest first; returns how many rows were deleted. The janitor calls
     /// this in a loop until it returns less than `limit` (see the "Janitor"
     /// section below for why every delete is bounded).
-    async fn score_history_delete_older_than(
-        &self,
-        cutoff: DateTime<Utc>,
-        limit: u32,
-    ) -> Result<u64>;
+    async fn score_history_delete_older_than(&self, cutoff: Timestamp, limit: u32) -> Result<u64>;
 
     // ---- Scheduler state (see src/scheduler.rs). ----
 
@@ -364,7 +361,7 @@ pub trait Store: Send + Sync {
         provider: &ProviderId,
         lineup: &str,
         channels: &[ProviderChannel],
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<()>;
 
     /// Every channel ever reported for (provider, lineup), ordered by
@@ -380,7 +377,7 @@ pub trait Store: Send + Sync {
         &self,
         provider: &ProviderId,
         lineup: &str,
-        window_start: DateTime<Utc>,
+        window_start: Timestamp,
     ) -> Result<Option<WindowState>>;
 
     /// Insert or replace (every field) the state of `state.window_start`.
@@ -397,8 +394,8 @@ pub trait Store: Send + Sync {
         &self,
         provider: &ProviderId,
         lineup: &str,
-        from: DateTime<Utc>,
-        to: DateTime<Utc>,
+        from: Timestamp,
+        to: Timestamp,
     ) -> Result<Vec<WindowState>>;
 
     // ---- Janitor (see src/janitor.rs). ----
@@ -411,24 +408,20 @@ pub trait Store: Send + Sync {
     // means STRICTLY older: a row exactly at the cutoff is kept.
 
     /// Delete raw provider responses fetched strictly before `cutoff`.
-    async fn delete_raw_older_than(&self, cutoff: DateTime<Utc>, limit: u32) -> Result<u64>;
+    async fn delete_raw_older_than(&self, cutoff: Timestamp, limit: u32) -> Result<u64>;
 
     /// Delete slots whose `end_utc` is strictly before `cutoff`, together with
     /// their observations (`ON DELETE CASCADE`). The caller must pass a cutoff
     /// that is not after "now", so only slots that have already aired can
     /// match; the janitor never passes a later one. `score_history` is not
     /// touched (it has no foreign key on purpose and is pruned by age).
-    async fn delete_aired_slots_older_than(&self, cutoff: DateTime<Utc>, limit: u32)
-    -> Result<u64>;
+    async fn delete_aired_slots_older_than(&self, cutoff: Timestamp, limit: u32) -> Result<u64>;
 
     /// Detach images from slots whose `end_utc` is strictly before `cutoff`
     /// (`image_id` becomes NULL); returns how many slots were changed. The
     /// slots themselves stay. Step one of image retention.
-    async fn images_clear_for_slots_older_than(
-        &self,
-        cutoff: DateTime<Utc>,
-        limit: u32,
-    ) -> Result<u64>;
+    async fn images_clear_for_slots_older_than(&self, cutoff: Timestamp, limit: u32)
+    -> Result<u64>;
 
     /// Delete `images` rows that no slot references. Step two of image
     /// retention. The result carries the `local_path` of every deleted row
@@ -440,7 +433,7 @@ pub trait Store: Send + Sync {
     async fn delete_state_older_than(
         &self,
         table: StateTable,
-        cutoff: DateTime<Utc>,
+        cutoff: Timestamp,
         limit: u32,
     ) -> Result<u64>;
 
@@ -478,8 +471,8 @@ pub enum StateTable {
 
 /// `now - max_age` as unix seconds, saturating instead of overflowing on
 /// absurd ages.
-pub(crate) fn cutoff_secs(now: DateTime<Utc>, max_age: Duration) -> i64 {
-    now.timestamp()
+pub(crate) fn cutoff_secs(now: Timestamp, max_age: Duration) -> i64 {
+    now.as_second()
         .saturating_sub(i64::try_from(max_age.as_secs()).unwrap_or(i64::MAX))
 }
 
@@ -499,8 +492,8 @@ pub(crate) fn resolve_slot(slot: SlotRef, new_ids: &[i64]) -> Result<i64> {
 }
 
 /// Day key stored in `fetch_budget.day`, e.g. `2026-11-01`.
-pub(crate) fn day_key(day: NaiveDate) -> String {
-    day.format("%Y-%m-%d").to_string()
+pub(crate) fn day_key(day: Date) -> String {
+    day.to_string()
 }
 
 /// Open the database named by `database_url`, run migrations, and return it.

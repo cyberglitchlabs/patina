@@ -4,11 +4,11 @@
 
 mod support;
 
+use jiff::{SignedDuration, Timestamp};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 use patina::clock::{Clock, FakeClock};
 use patina::config::LineupCfg;
 use patina::fetch::{CircuitState, FetchCfg, FetchLayer, FetchOutcome, SequenceJitter, SkipReason};
@@ -31,14 +31,17 @@ fn gn() -> ProviderId {
 }
 
 /// 2026-11-01 12:00 UTC: an ordinary moment, far from a day boundary.
-fn t0() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 11, 1, 12, 0, 0).unwrap()
+fn t0() -> Timestamp {
+    jiff::civil::datetime(2026, 11, 1, 12, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp()
 }
 
 /// The start of the n-th 6-hour window from t0 (distinct windows never hit
 /// each other's raw cache).
-fn window(n: i64) -> DateTime<Utc> {
-    t0() + TimeDelta::hours(6 * n)
+fn window(n: i64) -> Timestamp {
+    t0() + SignedDuration::from_hours(6 * n)
 }
 
 /// Settings for tests: defaults, except no minimum interval (so the limiter
@@ -93,8 +96,8 @@ fn assert_fresh(o: &FetchOutcome) {
     }
 }
 
-fn secs(n: i64) -> TimeDelta {
-    TimeDelta::seconds(n)
+fn secs(n: i64) -> SignedDuration {
+    SignedDuration::from_secs(n)
 }
 
 #[tokio::test]
@@ -163,7 +166,10 @@ async fn budget_survives_restart() {
 async fn budget_resets_at_utc_day_boundary() {
     let h = harness(cfg(2)).await;
     // 23:59:00 UTC on 2026-11-01.
-    let late = Utc.with_ymd_and_hms(2026, 11, 1, 23, 59, 0).unwrap();
+    let late = jiff::civil::datetime(2026, 11, 1, 23, 59, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
     h.clock.set(late);
     assert_fresh(&h.fetch(0).await);
     assert_fresh(&h.fetch(1).await);
@@ -173,20 +179,28 @@ async fn budget_resets_at_utc_day_boundary() {
     ));
 
     // One second before midnight: still the same day.
-    h.clock
-        .set(Utc.with_ymd_and_hms(2026, 11, 1, 23, 59, 59).unwrap());
+    h.clock.set(
+        jiff::civil::datetime(2026, 11, 1, 23, 59, 59, 0)
+            .in_tz("UTC")
+            .unwrap()
+            .timestamp(),
+    );
     assert!(matches!(
         h.fetch(2).await,
         FetchOutcome::Skipped(SkipReason::BudgetExhausted)
     ));
 
     // Midnight UTC: a new budget day.
-    h.clock
-        .set(Utc.with_ymd_and_hms(2026, 11, 2, 0, 0, 0).unwrap());
+    h.clock.set(
+        jiff::civil::datetime(2026, 11, 2, 0, 0, 0, 0)
+            .in_tz("UTC")
+            .unwrap()
+            .timestamp(),
+    );
     assert_eq!(h.layer.provider_state(&gn()).await.unwrap().budget_used, 0);
     assert_fresh(&h.fetch(2).await);
     assert_eq!(h.fake.request_count(), 3);
-    let day1 = chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+    let day1 = jiff::civil::date(2026, 11, 1);
     assert_eq!(h.store.budget_used(&gn(), day1).await.unwrap(), 2);
 }
 
@@ -291,7 +305,7 @@ async fn circuit_opens_after_5_consecutive_failures_and_closes_after_cooldown_pr
         }
     }
     let opened_at = h.clock.now();
-    let until = opened_at + TimeDelta::minutes(15);
+    let until = opened_at + SignedDuration::from_mins(15);
     let st = h.layer.provider_state(&gn()).await.unwrap();
     assert_eq!(st.circuit, CircuitState::Open { until });
     assert!(st.last_error.is_some());
@@ -319,7 +333,7 @@ async fn circuit_opens_after_5_consecutive_failures_and_closes_after_cooldown_pr
         FetchOutcome::Skipped(SkipReason::Failed(_))
     ));
     assert_eq!(h.fake.request_count(), 6);
-    let until2 = until + TimeDelta::minutes(16);
+    let until2 = until + SignedDuration::from_mins(16);
     assert!(matches!(
         h.fetch(0).await,
         FetchOutcome::Skipped(SkipReason::CircuitOpen { until: u }) if u == until2
@@ -526,14 +540,14 @@ async fn requests_carry_browser_like_user_agent() {
     let ua = reqs[0].user_agent.as_deref().expect("User-Agent header");
     assert!(ua.starts_with("Mozilla/5.0"), "{ua}");
     assert!(ua.contains("Chrome/") || ua.contains("Firefox/"), "{ua}");
-    assert_eq!(reqs[0].query["time"], window(0).timestamp().to_string());
+    assert_eq!(reqs[0].query["time"], window(0).as_second().to_string());
 }
 
 /// Wraps a provider and records the (fake) time of every HTTP attempt.
 struct Recording {
     inner: Arc<dyn Provider>,
     clock: Arc<FakeClock>,
-    times: Mutex<Vec<DateTime<Utc>>>,
+    times: Mutex<Vec<Timestamp>>,
 }
 
 #[async_trait]
@@ -544,12 +558,12 @@ impl Provider for Recording {
     async fn fetch_window(
         &self,
         lineup: &LineupCfg,
-        window_start: DateTime<Utc>,
+        window_start: Timestamp,
     ) -> Result<RawResponse, FetchError> {
         self.times.lock().unwrap().push(self.clock.now());
         self.inner.fetch_window(lineup, window_start).await
     }
-    fn parse(&self, l: &LineupCfg, raw: &RawResponse, at: DateTime<Utc>) -> ParsedWindow {
+    fn parse(&self, l: &LineupCfg, raw: &RawResponse, at: Timestamp) -> ParsedWindow {
         self.inner.parse(l, raw, at)
     }
 }
@@ -591,9 +605,9 @@ async fn concurrent_fetches_respect_min_interval_with_jitter() {
     let times = recording.times.lock().unwrap().clone();
     assert_eq!(times.len(), 6);
     assert_eq!(times[0], t0(), "the first request does not wait");
-    let gaps: Vec<i64> = times
+    let gaps: Vec<i128> = times
         .windows(2)
-        .map(|w| (w[1] - w[0]).num_milliseconds())
+        .map(|w| (w[1] - w[0]).as_millis())
         .collect();
     assert_eq!(gaps, [1000, 3000, 2000, 2500, 1500]);
     assert_eq!(
@@ -636,7 +650,7 @@ async fn assert_reopened_and_silent(h: &Harness) {
     assert_eq!(
         st.circuit,
         CircuitState::Open {
-            until: probe_at + TimeDelta::minutes(15)
+            until: probe_at + SignedDuration::from_mins(15)
         }
     );
     for step in [1, 60, 120, 240, 600] {

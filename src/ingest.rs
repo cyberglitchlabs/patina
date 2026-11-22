@@ -41,13 +41,13 @@
 //! [`WindowIngest::window`] takes `&mut self`, so the compiler enforces that
 //! for everything that goes through it.
 
+use jiff::{SignedDuration, Timestamp};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, TimeDelta, Utc};
 
 use crate::config::Weights;
 use crate::merge::{
@@ -67,7 +67,7 @@ use crate::store::{AccuracyRow, ScoreHistoryRow, Store};
 /// this much older than the new one: comparing two fetches minutes apart
 /// measures nothing (and the same data merged twice in one tick, from two
 /// overlapping windows, must not count twice).
-pub const HINDSIGHT_MIN_AGE: TimeDelta = TimeDelta::hours(1);
+pub const HINDSIGHT_MIN_AGE: SignedDuration = SignedDuration::from_hours(1);
 
 /// Store the provider's channel list of one response (keyed by its own
 /// channel ids, for matching and overrides) and the canonical channels its
@@ -78,7 +78,7 @@ pub async fn store_channels(
     provider: &ProviderId,
     lineup: &str,
     channels: &[ProviderChannel],
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<BTreeSet<ChannelId>> {
     store
         .provider_channels_upsert(provider, lineup, channels, now)
@@ -101,7 +101,7 @@ pub struct ChannelResponse<'a> {
     pub provider: &'a ProviderId,
     pub channel: &'a ChannelId,
     /// The time window the request asked for and the response answered.
-    pub window: Range<DateTime<Utc>>,
+    pub window: Range<Timestamp>,
     /// The response's programmes for this channel, each with its own
     /// `fetched_at`. May be empty (a listed channel with no programmes):
     /// then nothing changes.
@@ -144,11 +144,7 @@ impl Ingest<'_> {
     /// Merge one channel response into the master guide: load -> plan ->
     /// apply -> history, and the hindsight samples. See the module docs.
     /// `now` is the planning time (aired slots, `end <= now`, never change).
-    pub async fn channel(
-        &self,
-        response: ChannelResponse<'_>,
-        now: DateTime<Utc>,
-    ) -> Result<Ingested> {
+    pub async fn channel(&self, response: ChannelResponse<'_>, now: Timestamp) -> Result<Ingested> {
         let incoming = response.observations;
         if incoming.is_empty() {
             // Listed with no programmes: the plan would be empty (absence
@@ -317,9 +313,9 @@ impl WindowIngest {
         &mut self,
         provider: &ProviderId,
         lineup: &str,
-        window: Range<DateTime<Utc>>,
+        window: Range<Timestamp>,
         parsed: &ParsedWindow,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> WindowIngested {
         let mut out = WindowIngested::default();
 
@@ -417,7 +413,7 @@ impl WindowIngest {
         provider: &ProviderId,
         channel: &ChannelId,
         samples: &[f64],
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) {
         if !self.accuracy_loaded {
             return;
@@ -434,7 +430,7 @@ impl WindowIngest {
 /// The time range `slots_with_observations` must be asked for before
 /// planning: everything the window or any incoming observation touches. The
 /// plan is only correct if every slot that could match is passed in.
-fn existing_range(coverage: &Coverage, incoming: &[Observation]) -> (DateTime<Utc>, DateTime<Utc>) {
+fn existing_range(coverage: &Coverage, incoming: &[Observation]) -> (Timestamp, Timestamp) {
     let mut from = coverage.window.start;
     let mut to = coverage.window.end;
     for o in incoming {
@@ -456,7 +452,7 @@ fn hindsight(
     matches: &[PlanMatch],
     incoming: &[Observation],
     provider: &ProviderId,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Vec<f64> {
     matches
         .iter()

@@ -7,13 +7,13 @@
 //! so [`source_names`] derives one from the kind and the 1-based position
 //! among sources of that kind: `hdhomerun-1`, `hdhomerun-2`, `static-1`, ...
 
+use jiff::{SignedDuration, Timestamp};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use bytes::Bytes;
-use chrono::{DateTime, TimeDelta, Utc};
 use jiff::tz::TimeZone;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -35,7 +35,7 @@ use crate::xmltv;
 /// generation first).
 pub const CACHE_TTL: Duration = Duration::from_secs(30);
 /// Programmes start this long before "now", so shows on air are present.
-pub const LOOKBACK: TimeDelta = TimeDelta::hours(3);
+pub const LOOKBACK: SignedDuration = SignedDuration::from_hours(3);
 /// How often the tuner channel lists are reloaded.
 pub const REFRESH_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
@@ -167,7 +167,7 @@ pub struct SourceMatch {
 
 struct CacheEntry {
     generation: u64,
-    at: DateTime<Utc>,
+    at: Timestamp,
     rendered: Rendered,
 }
 
@@ -347,7 +347,7 @@ impl Feeds {
         if let Some(e) = cache.get(name)
             && e.generation == generation
             && now >= e.at
-            && (now - e.at).to_std().is_ok_and(|age| age < CACHE_TTL)
+            && Duration::try_from(now - e.at).is_ok_and(|age| age < CACHE_TTL)
         {
             return FeedOutcome::Ok(e.rendered.clone());
         }
@@ -374,7 +374,7 @@ impl Feeds {
 
     /// Render one feed from scratch. `Err` carries the reason it cannot be
     /// built yet.
-    async fn build(&self, name: &str, now: DateTime<Utc>) -> Result<String, String> {
+    async fn build(&self, name: &str, now: Timestamp) -> Result<String, String> {
         let selected: Vec<&FeedSourceSpec> = self
             .sources
             .iter()

@@ -4,6 +4,7 @@
 
 mod support;
 
+use jiff::{SignedDuration, Timestamp};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -13,7 +14,6 @@ use async_trait::async_trait;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use chrono::{DateTime, TimeDelta, TimeZone as _, Utc};
 use http_body_util::BodyExt;
 use jiff::tz::TimeZone;
 use patina::channels::hdhomerun::parse_lineup;
@@ -34,8 +34,11 @@ use tower::ServiceExt;
 
 const TUNER_LINEUP: &[u8] = include_bytes!("fixtures/hdhomerun/lineup.json");
 
-fn now0() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 10, 31, 20, 0, 0).unwrap()
+fn now0() -> Timestamp {
+    jiff::civil::datetime(2026, 10, 31, 20, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp()
 }
 
 fn gn() -> ProviderId {
@@ -124,13 +127,13 @@ async fn env_with(
 }
 
 /// Insert one slot straight into the master guide.
-async fn add_slot(store: &Arc<dyn Store>, channel: &str, start: DateTime<Utc>, title: &str) {
+async fn add_slot(store: &Arc<dyn Store>, channel: &str, start: Timestamp, title: &str) {
     let mut plan = MergePlan::empty(now0());
     plan.inserts.push(NewSlot {
         channel: ChannelId(channel.into()),
         fields: SlotFields {
             start,
-            end: start + TimeDelta::minutes(30),
+            end: start + SignedDuration::from_mins(30),
             title: title.into(),
             subtitle: None,
             description: None,
@@ -376,29 +379,35 @@ async fn slots_window_starts_three_hours_before_now_and_ends_at_horizon() {
     add_slot(
         &env.store,
         "WCCODT.us",
-        now - TimeDelta::hours(3) - TimeDelta::minutes(31),
+        now - SignedDuration::from_hours(3) - SignedDuration::from_mins(31),
         "ended-before",
     )
     .await;
     add_slot(
         &env.store,
         "WCCODT.us",
-        now - TimeDelta::hours(3) - TimeDelta::minutes(20),
+        now - SignedDuration::from_hours(3) - SignedDuration::from_mins(20),
         "overlaps-start",
     )
     .await;
-    add_slot(&env.store, "WCCODT.us", now - TimeDelta::hours(1), "airing").await;
     add_slot(
         &env.store,
         "WCCODT.us",
-        now + TimeDelta::days(7) - TimeDelta::minutes(1),
+        now - SignedDuration::from_hours(1),
+        "airing",
+    )
+    .await;
+    add_slot(
+        &env.store,
+        "WCCODT.us",
+        now + SignedDuration::from_hours(24 * 7) - SignedDuration::from_mins(1),
         "last",
     )
     .await;
     add_slot(
         &env.store,
         "WCCODT.us",
-        now + TimeDelta::days(7),
+        now + SignedDuration::from_hours(24 * 7),
         "past-horizon",
     )
     .await;
@@ -744,7 +753,7 @@ async fn rendered_feed_is_cached_until_ttl_or_generation_change() {
     add_slot(
         &env.store,
         "WCCODT.us",
-        now0() + TimeDelta::hours(1),
+        now0() + SignedDuration::from_hours(1),
         "Later",
     )
     .await;

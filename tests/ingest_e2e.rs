@@ -14,10 +14,10 @@
 mod common;
 mod support;
 
+use jiff::{SignedDuration, Timestamp};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 use patina::channels::hdhomerun::parse_lineup;
 use patina::channels::matching::{Overrides, match_channels};
 use patina::clock::FakeClock;
@@ -38,25 +38,31 @@ const TUNER_LINEUP: &[u8] = include_bytes!("fixtures/hdhomerun/lineup.json");
 /// Windows in a 7-day horizon from `now0()` (see the module comment).
 const HORIZON_WINDOWS: usize = 29;
 
-fn now0() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 10, 31, 20, 0, 0).unwrap()
+fn now0() -> Timestamp {
+    jiff::civil::datetime(2026, 10, 31, 20, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp()
 }
 
 /// 2026-10-31 18:00 UTC: the first window, the one containing `now0()`.
-fn first_window() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 10, 31, 18, 0, 0).unwrap()
+fn first_window() -> Timestamp {
+    jiff::civil::datetime(2026, 10, 31, 18, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp()
 }
 
 /// `n` consecutive 6-hour window starts from `from`, as unix seconds (the
 /// form the fake server sees in the `time` query parameter).
-fn grid(from: DateTime<Utc>, n: usize) -> Vec<i64> {
+fn grid(from: Timestamp, n: usize) -> Vec<i64> {
     (0..n as i64)
-        .map(|i| (from + TimeDelta::hours(6 * i)).timestamp())
+        .map(|i| (from + SignedDuration::from_hours(6 * i)).as_second())
         .collect()
 }
 
-fn hours_mins(h: i64, m: i64) -> DateTime<Utc> {
-    now0() + TimeDelta::hours(h) + TimeDelta::minutes(m)
+fn hours_mins(h: i64, m: i64) -> Timestamp {
+    now0() + SignedDuration::from_hours(h) + SignedDuration::from_mins(m)
 }
 
 fn gn() -> ProviderId {
@@ -162,8 +168,14 @@ fn requested_after(fake: &FakeProvider, skip: usize) -> Vec<i64> {
 /// The whole master guide: every channel, every slot with every
 /// observation. Two dumps are equal only if nothing at all changed.
 async fn dump(store: &Arc<dyn Store>) -> Vec<(ChannelId, Vec<SlotWithObservations>)> {
-    let far_past = Utc.with_ymd_and_hms(2000, 1, 1, 0, 0, 0).unwrap();
-    let far_future = Utc.with_ymd_and_hms(2100, 1, 1, 0, 0, 0).unwrap();
+    let far_past = jiff::civil::datetime(2000, 1, 1, 0, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
+    let far_future = jiff::civil::datetime(2100, 1, 1, 0, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
     let mut out = Vec::new();
     for c in store.list_channels().await.unwrap() {
         let slots = store
@@ -215,8 +227,8 @@ async fn ok_shifted_moves_the_fixture_to_the_requested_window() {
     // Fixture window 22:00 moved to 18:00: every time is 4 hours earlier,
     // and nothing else changed.
     for (a, b) in parsed.observations.iter().zip(&original.observations) {
-        assert_eq!(a.start, b.start - TimeDelta::hours(4));
-        assert_eq!(a.end, b.end - TimeDelta::hours(4));
+        assert_eq!(a.start, b.start - SignedDuration::from_hours(4));
+        assert_eq!(a.end, b.end - SignedDuration::from_hours(4));
         assert_eq!((&a.title, &a.description), (&b.title, &b.description));
     }
 }
@@ -256,7 +268,10 @@ async fn first_tick_fetches_all_windows_for_horizon() {
     let history = h
         .store
         .score_history_delete_older_than(
-            Utc.with_ymd_and_hms(2100, 1, 1, 0, 0, 0).unwrap(),
+            jiff::civil::datetime(2100, 1, 1, 0, 0, 0, 0)
+                .in_tz("UTC")
+                .unwrap()
+                .timestamp(),
             100_000,
         )
         .await
@@ -269,7 +284,10 @@ async fn first_tick_fetches_all_windows_for_horizon() {
 async fn take_score_history(store: &Arc<dyn Store>) -> u64 {
     store
         .score_history_delete_older_than(
-            Utc.with_ymd_and_hms(2100, 1, 1, 0, 0, 0).unwrap(),
+            jiff::civil::datetime(2100, 1, 1, 0, 0, 0, 0)
+                .in_tz("UTC")
+                .unwrap()
+                .timestamp(),
             1_000_000,
         )
         .await
@@ -297,8 +315,8 @@ async fn identical_refresh_does_not_rewrite_slots_or_grow_score_history() {
     // usable here: neighbouring windows overlap and disagree at the edges.)
     let h = harness(150).await;
     h.fake.set_default(Behavior::ok_fixture());
-    let start = now0() - TimeDelta::hours(24);
-    let at = |h: i64, m: i64| start + TimeDelta::hours(h) + TimeDelta::minutes(m);
+    let start = now0() - SignedDuration::from_hours(24);
+    let at = |h: i64, m: i64| start + SignedDuration::from_hours(h) + SignedDuration::from_mins(m);
     h.clock.set(start);
     let r = h.sched.tick().await;
     assert!(r.slots_inserted > 500, "{r:?}");
@@ -359,7 +377,7 @@ async fn near_windows_refresh_every_3h_far_windows_daily() {
     let h = harness(150).await;
     h.sched.tick().await;
     let mut seen = h.fake.request_count();
-    let step = |at: DateTime<Utc>| {
+    let step = |at: Timestamp| {
         h.clock.set(at);
         let sched = &h.sched;
         async move { sched.tick().await }
@@ -378,8 +396,14 @@ async fn near_windows_refresh_every_3h_far_windows_daily() {
     // 23 h 50 min after the first pass (2026-11-01 19:50): the near windows
     // are due again, the far windows are not (fetched under 24 h ago); the
     // four windows that just entered the horizon (2026-11-08) are new.
-    let nov1_18 = Utc.with_ymd_and_hms(2026, 11, 1, 18, 0, 0).unwrap();
-    let nov8_00 = Utc.with_ymd_and_hms(2026, 11, 8, 0, 0, 0).unwrap();
+    let nov1_18 = jiff::civil::datetime(2026, 11, 1, 18, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
+    let nov8_00 = jiff::civil::datetime(2026, 11, 8, 0, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
     step(hours_mins(23, 50)).await;
     let mut expect = grid(nov1_18, 5);
     expect.extend(grid(nov8_00, 4));
@@ -389,7 +413,10 @@ async fn near_windows_refresh_every_3h_far_windows_daily() {
     // 24 h 05 min: now the far windows (2026-11-03 to 2026-11-07) are a day
     // old and get their daily refresh; nothing else is due.
     step(hours_mins(24, 5)).await;
-    let nov3_00 = Utc.with_ymd_and_hms(2026, 11, 3, 0, 0, 0).unwrap();
+    let nov3_00 = jiff::civil::datetime(2026, 11, 3, 0, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
     assert_eq!(requested_after(&h.fake, seen), grid(nov3_00, 20));
 }
 
@@ -421,7 +448,7 @@ async fn tick_stops_cleanly_when_budget_exhausted_and_master_still_served() {
     let wcco = ChannelId("WCCODT.us".into());
     let tonight = h
         .store
-        .slots(wcco, now0(), now0() + TimeDelta::hours(6))
+        .slots(wcco, now0(), now0() + SignedDuration::from_hours(6))
         .await
         .unwrap();
     assert!(!tonight.is_empty(), "tonight's guide is still served");
@@ -497,7 +524,10 @@ async fn partial_failure_merges_successful_windows_only() {
     let r = h.sched.tick().await;
     assert_eq!(
         requested_after(&h.fake, 4),
-        grid(first_window() + TimeDelta::hours(18), HORIZON_WINDOWS - 3)
+        grid(
+            first_window() + SignedDuration::from_hours(18),
+            HORIZON_WINDOWS - 3
+        )
     );
     assert_eq!(r.fetched, HORIZON_WINDOWS - 3);
 }
@@ -517,7 +547,7 @@ async fn bad_window_400_in_middle_does_not_block_other_windows() {
     assert_eq!(r.fetched, HORIZON_WINDOWS - 1);
     assert_eq!(r.skipped.bad_window, 1);
     assert!(r.lineup_halted_bad_windows.is_empty());
-    let w3 = first_window() + TimeDelta::hours(12);
+    let w3 = first_window() + SignedDuration::from_hours(12);
     let st = h
         .store
         .window_state_get(&gn(), "ota", w3)
@@ -527,11 +557,14 @@ async fn bad_window_400_in_middle_does_not_block_other_windows() {
     assert_eq!(st.last_success, None);
     assert_eq!(st.last_failure, Some(WindowFailure::BadWindow));
     // Later windows were merged: WCCO has programmes on 2026-11-05.
-    let nov5 = Utc.with_ymd_and_hms(2026, 11, 5, 0, 0, 0).unwrap();
+    let nov5 = jiff::civil::datetime(2026, 11, 5, 0, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp();
     let wcco = ChannelId("WCCODT.us".into());
     let later = h
         .store
-        .slots(wcco, nov5, nov5 + TimeDelta::hours(6))
+        .slots(wcco, nov5, nov5 + SignedDuration::from_hours(6))
         .await
         .unwrap();
     assert!(!later.is_empty());
@@ -545,7 +578,7 @@ async fn bad_window_400_in_middle_does_not_block_other_windows() {
     // After the fetch layer's 6-hour memory it is tried again.
     h.clock.set(hours_mins(6, 5));
     h.sched.tick().await;
-    assert!(requested_after(&h.fake, HORIZON_WINDOWS).contains(&w3.timestamp()));
+    assert!(requested_after(&h.fake, HORIZON_WINDOWS).contains(&w3.as_second()));
 }
 
 #[tokio::test]
@@ -861,7 +894,12 @@ async fn hindsight_updates_ema_when_slot_refetched_closer_to_air() {
         assert_eq!(row.provider, gn());
         assert!(row.samples >= 1);
         assert!((0.0..=expected + 1e-9).contains(&row.ema), "{row:?}");
-        assert_eq!(row.updated_at.date_naive(), now0().date_naive());
+        assert_eq!(
+            row.updated_at
+                .to_zoned_datetime(jiff::tz::TimeZone::UTC)
+                .date(),
+            now0().to_zoned_datetime(jiff::tz::TimeZone::UTC).date()
+        );
     }
     assert!(
         rows.iter().any(|r| (r.ema - expected).abs() < 1e-9),
@@ -944,7 +982,7 @@ async fn skipped_outcomes_leave_the_bad_window_streak_unchanged() {
         Behavior::Status(400),
     ]);
     let r = h.sched.tick().await;
-    let w = |i: i64| first_window().timestamp() + i * 6 * 3600;
+    let w = |i: i64| first_window().as_second() + i * 6 * 3600;
     assert_eq!(
         requested_after(&h.fake, HORIZON_WINDOWS),
         vec![w(0), w(2), w(3)]
@@ -974,9 +1012,9 @@ async fn failing_merge_is_retried_at_most_every_30_minutes() {
     // refuses every merge for ZZFAIL, that window keeps failing to store.
     let failing = Arc::new(FailingStore::new(connect("sqlite::memory:").await.unwrap()));
     let h = harness_on(failing.clone(), 150).await;
-    let w_bad = first_window() + TimeDelta::hours(6);
+    let w_bad = first_window() + SignedDuration::from_hours(6);
     h.fake.set_for_window(
-        w_bad.timestamp(),
+        w_bad.as_second(),
         Behavior::OkShifted(fixture_with_extra_channel()),
     );
     let zz = ChannelId("ZZFAIL.us".into());
@@ -1004,19 +1042,23 @@ async fn failing_merge_is_retried_at_most_every_30_minutes() {
     let healthy: Vec<i64> = after
         .iter()
         .copied()
-        .filter(|&t| t != w_bad.timestamp())
+        .filter(|&t| t != w_bad.as_second())
         .collect();
     let mut expect_healthy = grid(first_window(), 5);
-    expect_healthy.retain(|&t| t != w_bad.timestamp());
+    expect_healthy.retain(|&t| t != w_bad.as_second());
     expect_healthy.push(
-        Utc.with_ymd_and_hms(2026, 11, 2, 0, 0, 0)
+        jiff::civil::datetime(2026, 11, 2, 0, 0, 0, 0)
+            .in_tz("UTC")
             .unwrap()
-            .timestamp(),
+            .timestamp()
+            .as_second(),
     );
     expect_healthy.push(
-        Utc.with_ymd_and_hms(2026, 11, 8, 0, 0, 0)
+        jiff::civil::datetime(2026, 11, 8, 0, 0, 0, 0)
+            .in_tz("UTC")
             .unwrap()
-            .timestamp(),
+            .timestamp()
+            .as_second(),
     );
     assert_eq!(healthy, expect_healthy, "healthy windows unaffected");
     let bad_requests = after.len() - healthy.len();
@@ -1084,7 +1126,7 @@ async fn window_state_in_the_future_is_treated_as_now() {
     let h = harness(150).await;
     h.sched.tick().await;
     // Window 2 (2026-11-01 00:00): still inside the horizon at 6 h 10.
-    let w2 = first_window() + TimeDelta::hours(6);
+    let w2 = first_window() + SignedDuration::from_hours(6);
     // Its last success lies 10 days ahead (the clock was
     // wrong, or jumped back).
     let mut st = h
@@ -1093,14 +1135,14 @@ async fn window_state_in_the_future_is_treated_as_now() {
         .await
         .unwrap()
         .unwrap();
-    st.last_success = Some(now0() + TimeDelta::days(10));
-    st.last_attempt = now0() + TimeDelta::days(10);
+    st.last_success = Some(now0() + SignedDuration::from_hours(24 * 10));
+    st.last_attempt = now0() + SignedDuration::from_hours(24 * 10);
     h.store.window_state_put(&gn(), "ota", &st).await.unwrap();
 
     // At 3 h 05 it counts as fetched just now (and is stored that way).
     h.clock.set(hours_mins(3, 5));
     h.sched.tick().await;
-    let first = w2.timestamp();
+    let first = w2.as_second();
     assert!(!requested_after(&h.fake, HORIZON_WINDOWS).contains(&first));
     let st = h
         .store
@@ -1182,7 +1224,7 @@ async fn all_window_states(store: &Arc<dyn Store>) -> Vec<patina::store::WindowS
             &gn(),
             "ota",
             first_window(),
-            first_window() + TimeDelta::days(9),
+            first_window() + SignedDuration::from_hours(24 * 9),
         )
         .await
         .unwrap()

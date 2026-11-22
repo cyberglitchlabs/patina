@@ -2,13 +2,13 @@
 //! lineup and the real Gracenote grid; nothing here touches a network
 //! except an in-test server on 127.0.0.1.
 
+use jiff::{SignedDuration, Timestamp};
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use axum::{Router, routing::get};
 use bytes::Bytes;
-use chrono::{DateTime, TimeZone, Utc};
 use patina::channels::hdhomerun::{HdHomeRunSource, parse_lineup};
 use patina::channels::matching::{Overrides, match_channels, normalize_call_sign};
 use patina::channels::{
@@ -24,8 +24,11 @@ use url::Url;
 const LINEUP: &[u8] = include_bytes!("fixtures/hdhomerun/lineup.json");
 const GRID: &[u8] = include_bytes!("fixtures/gracenote/grid-USA-OTA55401-6h.json");
 
-fn now() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 10, 31, 20, 0, 0).unwrap()
+fn now() -> Timestamp {
+    jiff::civil::datetime(2026, 10, 31, 20, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp()
 }
 
 fn tuner() -> Vec<TunerChannel> {
@@ -399,7 +402,7 @@ async fn hdhomerun_unreachable_falls_back_to_last_known_list_and_marks_stale() {
 
     // Unreachable again, an hour later: last-known list, marked stale.
     *flaky.0.lock().unwrap() = None;
-    let later = now() + chrono::TimeDelta::hours(1);
+    let later = now() + SignedDuration::from_hours(1);
     let r = loader
         .load_with_fallback("tuner", &flaky, store.as_ref(), later)
         .await;
@@ -433,7 +436,7 @@ async fn empty_tuner_answer_keeps_the_last_known_list() {
     assert_eq!((r.channels.len(), r.stale), (107, false));
 
     *flaky.0.lock().unwrap() = Some(Vec::new());
-    let later = now() + chrono::TimeDelta::hours(1);
+    let later = now() + SignedDuration::from_hours(1);
     let r = loader
         .load_with_fallback("tuner", &flaky, store.as_ref(), later)
         .await;

@@ -1,7 +1,7 @@
 //! XMLTV rendering: pure function tests (no store, no HTTP).
 
-use chrono::{DateTime, TimeDelta, TimeZone as _, Utc};
 use jiff::tz::TimeZone;
+use jiff::{SignedDuration, Timestamp};
 use patina::model::{CanonicalChannel, ChannelId, MasterSlot, ProviderId, ScoreBreakdown, SlotId};
 use patina::xmltv::render;
 
@@ -18,11 +18,14 @@ fn chan(id: &str, number: &str, name: &str) -> CanonicalChannel {
     }
 }
 
-fn utc(y: i32, mo: u32, d: u32, h: u32, mi: u32, s: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(y, mo, d, h, mi, s).unwrap()
+fn utc(y: i16, mo: i8, d: i8, h: i8, mi: i8, s: i8) -> Timestamp {
+    jiff::civil::datetime(y, mo, d, h, mi, s, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp()
 }
 
-fn slot(channel: &str, start: DateTime<Utc>, end: DateTime<Utc>, title: &str) -> MasterSlot {
+fn slot(channel: &str, start: Timestamp, end: Timestamp, title: &str) -> MasterSlot {
     MasterSlot {
         id: SlotId(1),
         channel: ChannelId(channel.into()),
@@ -209,14 +212,17 @@ fn offsets_correct_across_us_fall_back_2026_11_01() {
         let xml = one_slot_xml(slot(
             "WCCODT.us",
             instant,
-            instant + TimeDelta::minutes(30),
+            instant + SignedDuration::from_mins(30),
             "T",
         ));
         let (start, _) = &programme_attrs(&xml)[0];
         assert_eq!(start, expected, "instant {instant}");
         // Round trip: parsing the rendered text gives back the same instant.
-        let parsed = DateTime::parse_from_str(start, "%Y%m%d%H%M%S %z").unwrap();
-        assert_eq!(parsed.with_timezone(&Utc), instant);
+        let parsed = jiff::fmt::strtime::parse("%Y%m%d%H%M%S %z", start)
+            .unwrap()
+            .to_timestamp()
+            .unwrap();
+        assert_eq!(parsed, instant);
     }
     // The two 01:30s render identically except for the offset.
     // A slot spanning the change has different offsets for start and stop.
@@ -294,7 +300,12 @@ fn offsets_are_right_for_zones_off_the_whole_hour_and_in_the_south() {
     ];
     for (zone, instant, expected) in cases {
         let tz = TimeZone::get(zone).unwrap();
-        let s = slot("WCCODT.us", instant, instant + TimeDelta::minutes(30), "T");
+        let s = slot(
+            "WCCODT.us",
+            instant,
+            instant + SignedDuration::from_mins(30),
+            "T",
+        );
         let xml = render(&[chan("WCCODT.us", "4.1", "WCCO-DT")], &[s], &tz);
         assert_eq!(programme_attrs(&xml)[0].0, expected, "{zone} at {instant}");
     }
@@ -401,7 +412,7 @@ fn output_parses_as_xml() {
         chan("NONE.us", "3.1", "No programmes"),
     ];
     let mut slots = Vec::new();
-    for i in 0..10 {
+    for i in 0..10i8 {
         let mut s = slot(
             if i % 2 == 0 { "A.us" } else { "B.us" },
             utc(2026, 10, 31, 12 + i, 0, 0),
@@ -409,7 +420,7 @@ fn output_parses_as_xml() {
             &format!("Show {i} & friends"),
         );
         s.season = Some(1);
-        s.episode = Some(i);
+        s.episode = Some(u32::try_from(i).unwrap());
         s.genres = vec!["Drama".into()];
         slots.push(s);
     }
@@ -533,25 +544,30 @@ fn programme_children_follow_dtd_order() {
 
 #[test]
 fn sub_second_and_far_future_slots_render_valid_times() {
-    let sub = Utc.timestamp_opt(1_793_484_000, 999_000_000).unwrap();
+    let sub = Timestamp::new(1_793_484_000, 999_000_000).unwrap();
     let xml = one_slot_xml(slot(
         "WCCODT.us",
         sub,
-        sub + TimeDelta::milliseconds(1500),
+        sub + SignedDuration::from_millis(1500),
         "Sub",
     ));
     // Fractions are dropped, never rendered as part of the time.
     let (start, stop) = programme_attrs(&xml).remove(0);
     for t in [&start, &stop] {
         assert_eq!(t.len(), 20, "{t}");
-        DateTime::parse_from_str(t, "%Y%m%d%H%M%S %z").unwrap();
+        jiff::fmt::strtime::parse("%Y%m%d%H%M%S %z", t).unwrap();
     }
-    // Far future: still a 4-digit year, and a slot beyond year 9999 (which
+    // Far future: still a 4-digit year, and a slot before year 0 (which
     // XMLTV cannot express) is skipped instead of producing a bad time.
     let far = utc(2099, 12, 31, 23, 0, 0);
-    let ok = slot("WCCODT.us", far, far + TimeDelta::hours(1), "Far");
-    let beyond = Utc.with_ymd_and_hms(10000, 1, 1, 0, 0, 0).unwrap();
-    let bad = slot("WCCODT.us", beyond, beyond + TimeDelta::hours(1), "Beyond");
+    let ok = slot("WCCODT.us", far, far + SignedDuration::from_hours(1), "Far");
+    let beyond = Timestamp::MIN;
+    let bad = slot(
+        "WCCODT.us",
+        beyond,
+        beyond + SignedDuration::from_hours(1),
+        "Before",
+    );
     let xml = render(&[chan("WCCODT.us", "4.1", "W")], &[ok, bad], &TimeZone::UTC);
     let attrs = programme_attrs(&xml);
     assert_eq!(attrs.len(), 1);
@@ -561,9 +577,9 @@ fn sub_second_and_far_future_slots_render_valid_times() {
 #[test]
 fn programmes_are_grouped_by_channel_then_start() {
     let channels = vec![chan("B.us", "2.1", "B"), chan("A.us", "1.1", "A")];
-    let s = |c: &str, h: u32, t: &str| {
+    let s = |c: &str, h: i8, t: &str| {
         let start = utc(2026, 10, 31, h, 0, 0);
-        slot(c, start, start + TimeDelta::hours(1), t)
+        slot(c, start, start + SignedDuration::from_hours(1), t)
     };
     let slots = vec![
         s("A.us", 23, "a2"),

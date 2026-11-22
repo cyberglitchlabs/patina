@@ -4,8 +4,8 @@
 
 mod common;
 
-use chrono::TimeDelta;
 use common::merge_util::{Sim, StubScorer, ch, cover, obs, pid, t};
+use jiff::SignedDuration;
 use patina::merge::{Coverage, SlotRef, same_slot};
 
 const NOW: i64 = 0;
@@ -441,7 +441,7 @@ fn merged_programme_not_fresher_than_stored_removes_nothing() {
 
 #[test]
 fn incoming_subsecond_timestamps_do_not_cause_rewrites_or_false_contradictions() {
-    let ns = TimeDelta::nanoseconds(123_456_789);
+    let ns = SignedDuration::from_nanos(123_456_789);
     let with_ns = |provider: &str, s: i64, e: i64, title: &str, f: i64| {
         let mut o = obs(provider, s, e, title, f);
         o.start += ns;
@@ -458,9 +458,9 @@ fn incoming_subsecond_timestamps_do_not_cause_rewrites_or_false_contradictions()
     // What gets written is in whole seconds, as the store keeps it.
     assert!(plan.observations.iter().all(|w| {
         let o = &w.observation;
-        o.start.timestamp_subsec_nanos() == 0
-            && o.end.timestamp_subsec_nanos() == 0
-            && o.fetched_at.timestamp_subsec_nanos() == 0
+        o.start.subsec_nanosecond() == 0
+            && o.end.subsec_nanosecond() == 0
+            && o.fetched_at.subsec_nanosecond() == 0
     }));
     // The same response again: nothing to do.
     let again = sim.plan(&incoming, &cover("a", 0, 1440), &scorer(), t(NOW));

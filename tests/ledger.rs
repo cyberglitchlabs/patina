@@ -8,7 +8,7 @@
 //! expected decisions. The scheduler e2e tests (tests/ingest_e2e.rs) keep
 //! the request-count guarantees that only a real tick can show.
 
-use chrono::{DateTime, TimeDelta, TimeZone, Utc};
+use jiff::{SignedDuration, Timestamp};
 use patina::fetch::{FetchOutcome, SkipReason};
 use patina::ledger::{
     Attempt, BAD_WINDOW_HOLD, BAD_WINDOW_STREAK_LIMIT, Classified, Decision, LineupRun,
@@ -20,20 +20,23 @@ use patina::score::TimelineReport;
 use patina::store::{WindowFailure, WindowState};
 
 /// 2026-10-31 20:00 UTC (as in the e2e tests).
-fn now() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 10, 31, 20, 0, 0).unwrap()
+fn now() -> Timestamp {
+    jiff::civil::datetime(2026, 10, 31, 20, 0, 0, 0)
+        .in_tz("UTC")
+        .unwrap()
+        .timestamp()
 }
 
-fn h(n: i64) -> TimeDelta {
-    TimeDelta::hours(n)
+fn h(n: i64) -> SignedDuration {
+    SignedDuration::from_hours(n)
 }
 
-fn m(n: i64) -> TimeDelta {
-    TimeDelta::minutes(n)
+fn m(n: i64) -> SignedDuration {
+    SignedDuration::from_mins(n)
 }
 
-fn s(n: i64) -> TimeDelta {
-    TimeDelta::seconds(n)
+fn s(n: i64) -> SignedDuration {
+    SignedDuration::from_secs(n)
 }
 
 /// A clean timeline (no gaps, no overlaps).
@@ -61,7 +64,7 @@ fn answered(fresh: bool, integrity: Option<TimelineReport>, stored: bool) -> Att
     }
 }
 
-fn run(streak: u32, hold_until: Option<DateTime<Utc>>) -> LineupRun {
+fn run(streak: u32, hold_until: Option<Timestamp>) -> LineupRun {
     LineupRun { streak, hold_until }
 }
 
@@ -76,7 +79,7 @@ struct Expect {
     tally: Tally,
     /// The lineup's streak/hold afterwards.
     lineup: LineupRun,
-    hold_started: Option<DateTime<Utc>>,
+    hold_started: Option<Timestamp>,
 }
 
 #[test]
@@ -355,7 +358,7 @@ fn integrity_thresholds_are_strictly_greater_than() {
 // ---------------------------------------------------------------------------
 
 /// Feed a sequence of attempts to one lineup; return the final run.
-fn feed(attempts: &[Attempt]) -> (LineupRun, Vec<Option<DateTime<Utc>>>) {
+fn feed(attempts: &[Attempt]) -> (LineupRun, Vec<Option<Timestamp>>) {
     let mut r = LineupRun::default();
     let mut holds = Vec::new();
     for a in attempts {
@@ -432,7 +435,7 @@ fn a_hold_never_reaches_more_than_six_hours_past_now_when_the_clock_jumps_back()
 // The window row to write
 // ---------------------------------------------------------------------------
 
-fn state(last_success: Option<DateTime<Utc>>, failure: Option<WindowFailure>) -> WindowState {
+fn state(last_success: Option<Timestamp>, failure: Option<WindowFailure>) -> WindowState {
     WindowState {
         window_start: now() - h(2),
         last_success,
@@ -505,13 +508,13 @@ fn freshness_tiers_and_merge_retry_floor() {
     let n = now();
     let near = n + h(4); // starts within the next 24 h
     let far = n + h(30);
-    let ok = |age: TimeDelta| state(Some(n - age), None);
-    let merge_failed = |success_age: TimeDelta, attempt_age: TimeDelta| WindowState {
+    let ok = |age: SignedDuration| state(Some(n - age), None);
+    let merge_failed = |success_age: SignedDuration, attempt_age: SignedDuration| WindowState {
         last_attempt: n - attempt_age,
         ..state(Some(n - success_age), Some(WindowFailure::MergeFailed))
     };
     assert_eq!(MERGE_RETRY_FLOOR, m(30));
-    let rows: Vec<(&str, DateTime<Utc>, Option<WindowState>, bool)> = vec![
+    let rows: Vec<(&str, Timestamp, Option<WindowState>, bool)> = vec![
         ("never attempted", far, None, true),
         (
             "attempted, never succeeded",

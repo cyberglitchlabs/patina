@@ -20,9 +20,8 @@
 //! * A 429's `Retry-After` is honored, but never shortens our own backoff.
 //! * A success resets everything.
 
+use jiff::{SignedDuration, Timestamp};
 use std::time::Duration;
-
-use chrono::{DateTime, TimeDelta, Utc};
 
 use crate::store::ProviderFetchState;
 
@@ -35,7 +34,7 @@ pub enum CircuitState {
     /// Normal operation.
     Closed,
     /// Too many failures: no requests until `until`.
-    Open { until: DateTime<Utc> },
+    Open { until: Timestamp },
     /// Cooldown over: the next request is a single probe.
     HalfOpen,
 }
@@ -52,8 +51,8 @@ pub(crate) enum Failure {
 /// Why a request may not go out right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Hold {
-    CircuitOpen(DateTime<Utc>),
-    NotBefore(DateTime<Utc>),
+    CircuitOpen(Timestamp),
+    NotBefore(Timestamp),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -69,7 +68,7 @@ pub(crate) struct Policy {
 pub(crate) struct FailureEffect {
     /// The circuit went from closed (or half-open) to open.
     pub opened: bool,
-    pub not_before: DateTime<Utc>,
+    pub not_before: Timestamp,
 }
 
 /// Backoff after the `failures`-th failure in a row (1-based).
@@ -81,7 +80,7 @@ pub(crate) fn backoff(failures: u32, base: Duration, max: Duration) -> Duration 
     base.saturating_mul(factor).min(max)
 }
 
-pub(crate) fn circuit_state(st: &ProviderFetchState, now: DateTime<Utc>) -> CircuitState {
+pub(crate) fn circuit_state(st: &ProviderFetchState, now: Timestamp) -> CircuitState {
     match st.circuit_open_until {
         None => CircuitState::Closed,
         Some(until) if now < until => CircuitState::Open { until },
@@ -91,7 +90,7 @@ pub(crate) fn circuit_state(st: &ProviderFetchState, now: DateTime<Utc>) -> Circ
 
 /// `Some` if a request must not be sent at `now`. The circuit is checked
 /// first so callers see the more serious reason.
-pub(crate) fn hold(st: &ProviderFetchState, now: DateTime<Utc>) -> Option<Hold> {
+pub(crate) fn hold(st: &ProviderFetchState, now: Timestamp) -> Option<Hold> {
     if let CircuitState::Open { until } = circuit_state(st, now) {
         return Some(Hold::CircuitOpen(until));
     }
@@ -102,7 +101,7 @@ pub(crate) fn hold(st: &ProviderFetchState, now: DateTime<Utc>) -> Option<Hold> 
 }
 
 /// Record a success. Returns true if this closed an open/half-open circuit.
-pub(crate) fn on_success(st: &mut ProviderFetchState, now: DateTime<Utc>) -> bool {
+pub(crate) fn on_success(st: &mut ProviderFetchState, now: Timestamp) -> bool {
     let was_open = st.circuit_open_until.is_some();
     st.consecutive_failures = 0;
     st.not_before = None;
@@ -113,7 +112,7 @@ pub(crate) fn on_success(st: &mut ProviderFetchState, now: DateTime<Utc>) -> boo
 
 pub(crate) fn on_failure(
     st: &mut ProviderFetchState,
-    now: DateTime<Utc>,
+    now: Timestamp,
     failure: Failure,
     message: String,
     policy: &Policy,
@@ -155,17 +154,16 @@ pub(crate) fn on_failure(
 }
 
 /// `t + d`, saturating at the far future instead of overflowing.
-pub(crate) fn add(t: DateTime<Utc>, d: Duration) -> DateTime<Utc> {
-    TimeDelta::from_std(d)
+pub(crate) fn add(t: Timestamp, d: Duration) -> Timestamp {
+    SignedDuration::try_from(d)
         .ok()
-        .and_then(|d| t.checked_add_signed(d))
-        .unwrap_or(DateTime::<Utc>::MAX_UTC)
+        .and_then(|d| t.checked_add(d).ok())
+        .unwrap_or(Timestamp::MAX)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
 
     fn policy() -> Policy {
         Policy {
@@ -187,18 +185,21 @@ mod tests {
 
     #[test]
     fn fatal_opens_at_once_and_success_closes() {
-        let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let now = jiff::civil::datetime(2026, 1, 1, 0, 0, 0, 0)
+            .in_tz("UTC")
+            .unwrap()
+            .timestamp();
         let mut st = ProviderFetchState::default();
         let eff = on_failure(&mut st, now, Failure::Fatal, "HTTP 403".into(), &policy());
         assert!(eff.opened);
         assert_eq!(
             circuit_state(&st, now),
             CircuitState::Open {
-                until: now + TimeDelta::seconds(900)
+                until: now + SignedDuration::from_secs(900)
             }
         );
         assert_eq!(
-            circuit_state(&st, now + TimeDelta::seconds(900)),
+            circuit_state(&st, now + SignedDuration::from_secs(900)),
             CircuitState::HalfOpen
         );
         assert!(on_success(&mut st, now));
@@ -208,10 +209,13 @@ mod tests {
 
     #[test]
     fn any_failure_while_half_open_reopens() {
-        let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let now = jiff::civil::datetime(2026, 1, 1, 0, 0, 0, 0)
+            .in_tz("UTC")
+            .unwrap()
+            .timestamp();
         let mut st = ProviderFetchState::default();
         on_failure(&mut st, now, Failure::Fatal, "HTTP 403".into(), &policy());
-        let later = now + TimeDelta::seconds(900);
+        let later = now + SignedDuration::from_secs(900);
         assert_eq!(circuit_state(&st, later), CircuitState::HalfOpen);
         // Count is now 2, below the threshold of 5, yet it must reopen.
         let eff = on_failure(
@@ -226,26 +230,32 @@ mod tests {
         assert_eq!(
             circuit_state(&st, later),
             CircuitState::Open {
-                until: later + TimeDelta::seconds(900)
+                until: later + SignedDuration::from_secs(900)
             }
         );
     }
 
     #[test]
     fn short_retry_after_does_not_beat_backoff() {
-        let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let now = jiff::civil::datetime(2026, 1, 1, 0, 0, 0, 0)
+            .in_tz("UTC")
+            .unwrap()
+            .timestamp();
         let mut st = ProviderFetchState::default();
         let f = Failure::RateLimited(Some(Duration::from_secs(0)));
         let eff = on_failure(&mut st, now, f, "429".into(), &policy());
-        assert_eq!(eff.not_before, now + TimeDelta::seconds(30));
+        assert_eq!(eff.not_before, now + SignedDuration::from_secs(30));
     }
 
     #[test]
     fn retry_after_overrides_backoff_but_is_capped() {
-        let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let now = jiff::civil::datetime(2026, 1, 1, 0, 0, 0, 0)
+            .in_tz("UTC")
+            .unwrap()
+            .timestamp();
         let mut st = ProviderFetchState::default();
         let f = Failure::RateLimited(Some(Duration::from_secs(10 * 86400)));
         let eff = on_failure(&mut st, now, f, "429".into(), &policy());
-        assert_eq!(eff.not_before, now + TimeDelta::days(1));
+        assert_eq!(eff.not_before, now + SignedDuration::from_hours(24));
     }
 }

@@ -17,6 +17,7 @@
 //! Shared by several test files; each uses only part of it.
 #![allow(dead_code)]
 
+use jiff::{SignedDuration, Timestamp};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -48,11 +49,11 @@ pub const FIXTURE_WINDOW_START: i64 = 1_793_484_000;
 /// images, order), so the structure stays exactly that of a real response.
 pub fn shifted_fixture(body: &[u8], shift_secs: i64) -> Bytes {
     let mut grid: serde_json::Value = serde_json::from_slice(body).expect("fixture is JSON");
-    let delta = chrono::TimeDelta::seconds(shift_secs);
+    let delta = SignedDuration::from_secs(shift_secs);
     let shift = |v: &mut serde_json::Value| {
         if let Some(text) = v.as_str() {
-            let t = chrono::DateTime::parse_from_rfc3339(text).expect("fixture time") + delta;
-            *v = serde_json::Value::String(t.format("%Y-%m-%dT%H:%M:%SZ").to_string());
+            let t = text.parse::<Timestamp>().expect("fixture time") + delta;
+            *v = serde_json::Value::String(t.strftime("%Y-%m-%dT%H:%M:%SZ").to_string());
         }
     };
     for ch in grid["channels"].as_array_mut().expect("channels") {

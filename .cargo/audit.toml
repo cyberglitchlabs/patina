@@ -1,4 +1,0 @@
-[advisories]
-# chrono was marked unmaintained on 2026-09-14 (no known vulnerability).
-# Same reason and id as in deny.toml; keep the two in step.
-ignore = ["RUSTSEC-2026-0543"]

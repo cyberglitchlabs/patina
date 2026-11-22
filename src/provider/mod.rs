@@ -6,11 +6,11 @@
 //! the shared fetch layer), while `parse` is pure so it can be tested
 //! offline against captured responses.
 
+use jiff::Timestamp;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
 
 use crate::config::LineupCfg;
 use crate::model::{Observation, ProviderId};
@@ -112,15 +112,10 @@ pub trait Provider: Send + Sync {
     async fn fetch_window(
         &self,
         lineup: &LineupCfg,
-        window_start: DateTime<Utc>,
+        window_start: Timestamp,
     ) -> Result<RawResponse, FetchError>;
 
     /// Turn a raw response into observations. Pure: no I/O, never panics on
     /// malformed input (returns an empty window with `parse_error` set).
-    fn parse(
-        &self,
-        lineup: &LineupCfg,
-        raw: &RawResponse,
-        fetched_at: DateTime<Utc>,
-    ) -> ParsedWindow;
+    fn parse(&self, lineup: &LineupCfg, raw: &RawResponse, fetched_at: Timestamp) -> ParsedWindow;
 }

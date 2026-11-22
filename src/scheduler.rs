@@ -48,12 +48,12 @@
 //! **Hindsight accuracy** is `WindowIngest`'s business: it is collected as
 //! merges are stored and written in one batch when the tick finishes.
 
+use jiff::{SignedDuration, Timestamp};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use chrono::{DateTime, TimeDelta, Utc};
 use tokio_util::sync::CancellationToken;
 
 use crate::clock::Clock;
@@ -69,7 +69,7 @@ use crate::score::TimelineReport;
 use crate::store::{Store, WindowState};
 
 /// Length of one fetch window (the only `timespan` proven to work).
-pub const WINDOW: TimeDelta = TimeDelta::hours(6);
+pub const WINDOW: SignedDuration = SignedDuration::from_hours(6);
 
 /// A provider the scheduler drives, and the lineups configured for it.
 #[derive(Debug, Clone)]
@@ -173,8 +173,8 @@ impl TickReport {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResponseQuality {
     pub lineup: String,
-    pub window_start: DateTime<Utc>,
-    pub checked_at: DateTime<Utc>,
+    pub window_start: Timestamp,
+    pub checked_at: Timestamp,
     pub integrity: TimelineReport,
     /// False when the gaps or overlaps exceeded the limits (then it was
     /// counted as a reliability failure).
@@ -208,7 +208,7 @@ pub struct SchedulerStatus {
 #[derive(Default)]
 struct Observed {
     quality: BTreeMap<ProviderId, ResponseQuality>,
-    last_tick: Option<(DateTime<Utc>, TickReport)>,
+    last_tick: Option<(Timestamp, TickReport)>,
     /// Each lineup's 400-streak and bad-window hold, keyed by (provider,
     /// lineup name). Kept in memory only, on purpose: after a restart the
     /// hold is gone, which costs at most the 3 requests that set it again
@@ -224,11 +224,11 @@ pub struct StatusSnapshot {
     pub quality: BTreeMap<ProviderId, ResponseQuality>,
     /// When the latest finished tick ended and what it did; `None` before
     /// the first tick finished.
-    pub last_tick: Option<(DateTime<Utc>, TickReport)>,
+    pub last_tick: Option<(Timestamp, TickReport)>,
     /// The bad-window holds active at the snapshot time: per provider,
     /// (lineup name, hold end), in lineup-name order. Ended holds are left
     /// out even before the next tick forgets them.
-    pub holds: BTreeMap<ProviderId, Vec<(String, DateTime<Utc>)>>,
+    pub holds: BTreeMap<ProviderId, Vec<(String, Timestamp)>>,
 }
 
 impl SchedulerStatus {
@@ -242,9 +242,9 @@ impl SchedulerStatus {
     }
 
     /// Everything `/status` shows of the scheduler, as of `now`.
-    pub fn snapshot(&self, now: DateTime<Utc>) -> StatusSnapshot {
+    pub fn snapshot(&self, now: Timestamp) -> StatusSnapshot {
         let st = self.state();
-        let mut holds: BTreeMap<ProviderId, Vec<(String, DateTime<Utc>)>> = BTreeMap::new();
+        let mut holds: BTreeMap<ProviderId, Vec<(String, Timestamp)>> = BTreeMap::new();
         for ((provider, lineup), run) in &st.lineups {
             if let Some(until) = run.held_until(now) {
                 holds
@@ -266,7 +266,7 @@ impl SchedulerStatus {
     }
 
     /// Remember that a tick finished at `at` and what it did.
-    fn record_tick(&self, at: DateTime<Utc>, report: TickReport) {
+    fn record_tick(&self, at: Timestamp, report: TickReport) {
         self.state().last_tick = Some((at, report));
     }
 
@@ -287,7 +287,7 @@ impl SchedulerStatus {
     /// Begin a tick: streaks restart at 0, ended holds are forgotten (see
     /// `LineupRun::start_tick`). Holds that are still on stay, also when
     /// the tick is cancelled.
-    fn start_tick(&self, now: DateTime<Utc>) {
+    fn start_tick(&self, now: Timestamp) {
         let mut st = self.state();
         for run in st.lineups.values_mut() {
             *run = run.start_tick(now);
@@ -297,35 +297,35 @@ impl SchedulerStatus {
 }
 
 /// Start of the 6-hour grid window containing `t`.
-pub fn window_floor(t: DateTime<Utc>) -> DateTime<Utc> {
-    let len = WINDOW.num_seconds();
+pub fn window_floor(t: Timestamp) -> Timestamp {
+    let len = WINDOW.as_secs();
     // div_euclid rounds towards minus infinity, also for times before 1970.
-    let start = t.timestamp().div_euclid(len) * len;
-    DateTime::from_timestamp(start, 0).expect("grid start is in range")
+    let start = crate::clock::floor_second(t).div_euclid(len) * len;
+    Timestamp::from_second(start).expect("grid start is in range")
 }
 
 /// `now + horizon_days`, without any chance of a panic: the config already
 /// limits the value to `MAX_HORIZON_DAYS`, but this clamps it again and
 /// saturates at the latest representable time, so no value can crash a
 /// tick or a feed request.
-pub fn horizon_end(now: DateTime<Utc>, horizon_days: u32) -> DateTime<Utc> {
+pub fn horizon_end(now: Timestamp, horizon_days: u32) -> Timestamp {
     let days = horizon_days.min(MAX_HORIZON_DAYS);
-    now.checked_add_signed(TimeDelta::days(i64::from(days)))
-        .unwrap_or(DateTime::<Utc>::MAX_UTC)
+    now.checked_add(SignedDuration::from_hours(24 * i64::from(days)))
+        .unwrap_or(Timestamp::MAX)
 }
 
 /// Every window of the horizon: from the one containing `now`, while the
 /// window starts before `now + horizon_days`, in time order.
-pub fn horizon_windows(now: DateTime<Utc>, horizon_days: u32) -> Vec<DateTime<Utc>> {
+pub fn horizon_windows(now: Timestamp, horizon_days: u32) -> Vec<Timestamp> {
     let end = horizon_end(now, horizon_days);
     let mut out = Vec::new();
     let mut w = window_floor(now);
     while w < end {
         out.push(w);
         // Stop at the end of representable time instead of panicking.
-        match w.checked_add_signed(WINDOW) {
-            Some(next) => w = next,
-            None => break,
+        match w.checked_add(WINDOW) {
+            Ok(next) => w = next,
+            Err(_) => break,
         }
     }
     out
@@ -373,7 +373,8 @@ impl Scheduler {
     /// cancellation only between windows, so a window's merges are always
     /// finished (never cancelled half-way through applying a plan).
     pub async fn run(self, shutdown: CancellationToken) {
-        let interval = TimeDelta::from_std(self.tick_interval).unwrap_or(TimeDelta::seconds(60));
+        let interval =
+            SignedDuration::try_from(self.tick_interval).unwrap_or(SignedDuration::from_secs(60));
         loop {
             if shutdown.is_cancelled() {
                 break;
@@ -472,8 +473,8 @@ impl Scheduler {
         &self,
         p: &ProviderRef,
         lineup: &LineupCfg,
-        window_start: DateTime<Utc>,
-        now: DateTime<Utc>,
+        window_start: Timestamp,
+        now: Timestamp,
         d: Decision,
         report: &mut TickReport,
     ) {
@@ -505,7 +506,7 @@ impl Scheduler {
 
     /// Due windows of every provider lineup, nearest first, as
     /// (window start, provider index, lineup index).
-    async fn due_windows(&self, now: DateTime<Utc>) -> Vec<(DateTime<Utc>, usize, usize)> {
+    async fn due_windows(&self, now: Timestamp) -> Vec<(Timestamp, usize, usize)> {
         let windows = horizon_windows(now, self.horizon_days);
         let (Some(&first), Some(&last)) = (windows.first(), windows.last()) else {
             return Vec::new();
@@ -527,7 +528,7 @@ impl Scheduler {
                         continue;
                     }
                 };
-                let mut by_start: HashMap<DateTime<Utc>, WindowState> = HashMap::new();
+                let mut by_start: HashMap<Timestamp, WindowState> = HashMap::new();
                 for mut st in states {
                     // Times in the future mean the clock jumped backwards
                     // (or was wrong when they were written): store them
@@ -564,8 +565,8 @@ impl Scheduler {
         &self,
         p: &ProviderRef,
         lineup: &LineupCfg,
-        window_start: DateTime<Utc>,
-        now: DateTime<Utc>,
+        window_start: Timestamp,
+        now: Timestamp,
         integrity: TimelineReport,
         report: &mut TickReport,
     ) {
@@ -584,7 +585,7 @@ impl Scheduler {
         report.last_integrity = Some(integrity);
     }
 
-    async fn record_reliability(&self, provider: &ProviderId, success: bool, at: DateTime<Utc>) {
+    async fn record_reliability(&self, provider: &ProviderId, success: bool, at: Timestamp) {
         if let Err(e) = self
             .store
             .provider_reliability_record(provider, success, at)
@@ -601,9 +602,9 @@ impl Scheduler {
         &self,
         provider: &ProviderId,
         lineup: &LineupCfg,
-        window_start: DateTime<Utc>,
+        window_start: Timestamp,
         write: &WindowWrite,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) {
         // Holds the row read from the store, so `saved` can borrow it.
         let read: Option<WindowState>;
@@ -644,11 +645,14 @@ mod status_tests {
     use super::*;
     use crate::ledger::BAD_WINDOW_HOLD;
 
-    fn at(h: u32) -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 11, 1, h, 0, 0).unwrap()
+    fn at(h: i8) -> Timestamp {
+        jiff::civil::datetime(2026, 11, 1, h, 0, 0, 0)
+            .in_tz("UTC")
+            .unwrap()
+            .timestamp()
     }
 
-    fn quality(checked_at: DateTime<Utc>) -> ResponseQuality {
+    fn quality(checked_at: Timestamp) -> ResponseQuality {
         ResponseQuality {
             lineup: "ota".into(),
             window_start: checked_at,
@@ -658,7 +662,7 @@ mod status_tests {
         }
     }
 
-    fn held(until: DateTime<Utc>) -> LineupRun {
+    fn held(until: Timestamp) -> LineupRun {
         LineupRun {
             streak: 3,
             hold_until: Some(until),
