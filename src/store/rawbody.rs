@@ -1,5 +1,5 @@
-//! Raw response cache: gzip helpers used by both store backends, which keep
-//! bodies compressed (callers always see the original bytes).
+//! Gzip helpers for the raw response cache. Both store backends keep bodies
+//! compressed (callers always see the original bytes).
 //!
 //! Only bodies that came back as HTTP 200 *and* parsed cleanly are ever
 //! written (see `FetchLayer`), so a failed fetch can never replace a good

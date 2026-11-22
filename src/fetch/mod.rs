@@ -27,9 +27,8 @@
 //! the interval anyway, and the budget bounds the total.
 
 pub mod breaker;
-pub mod budget;
+mod budget;
 pub mod limiter;
-pub mod rawcache;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -47,6 +46,7 @@ use crate::provider::{FetchError, ParsedWindow, Provider, RawResponse};
 use crate::store::{ProviderFetchState, Store};
 pub use breaker::CircuitState;
 use breaker::{Failure, Hold, Policy};
+use budget::Budget;
 use limiter::Limiter;
 pub use limiter::{Jitter, RandomJitter, SequenceJitter};
 
@@ -200,7 +200,7 @@ pub struct ProviderState {
 
 struct Entry {
     provider: Arc<dyn Provider>,
-    budget_limit: u32,
+    budget: Budget,
     /// Held for a whole attempt: one request in flight per provider. A tokio
     /// mutex because it is held across `.await`.
     turn: tokio::sync::Mutex<Limiter>,
@@ -230,16 +230,17 @@ impl FetchLayer {
             .into_iter()
             .map(|p| {
                 let id = p.id().clone();
-                let budget_limit = cfg
-                    .daily_budgets
-                    .get(&id)
-                    .copied()
-                    .unwrap_or(cfg.default_daily_budget);
+                let budget = Budget::new(
+                    cfg.daily_budgets
+                        .get(&id)
+                        .copied()
+                        .unwrap_or(cfg.default_daily_budget),
+                );
                 let limiter =
                     Limiter::new(cfg.min_interval, cfg.jitter_fraction, cfg.jitter.clone());
                 let entry = Entry {
                     provider: p,
-                    budget_limit,
+                    budget,
                     turn: tokio::sync::Mutex::new(limiter),
                     state: Mutex::new(None),
                 };
@@ -318,14 +319,14 @@ impl FetchLayer {
             .with_context(|| format!("unknown provider {}", provider.0))?;
         let now = self.clock.now();
         let st = self.load_state(entry).await?;
-        let used = self
-            .store
-            .budget_used(provider, budget::budget_day(now))
+        let used = entry
+            .budget
+            .used(self.store.as_ref(), provider, now)
             .await?;
         Ok(ProviderState {
             circuit: breaker::circuit_state(&st, now),
             budget_used: used,
-            budget_limit: entry.budget_limit,
+            budget_limit: entry.budget.limit(),
             last_success: st.last_success,
             last_error: st.last_error,
             consecutive_failures: st.consecutive_failures,
@@ -346,7 +347,7 @@ impl FetchLayer {
 
         // A store error at any gate means we cannot prove the request is
         // allowed, so we do not send it ("fail closed").
-        match budget::exhausted(store, pid, now, entry.budget_limit).await {
+        match entry.budget.exhausted(store, pid, now).await {
             Ok(true) => {
                 self.count(pid, Outcome::SkippedBudget);
                 return FetchOutcome::Skipped(SkipReason::BudgetExhausted);
@@ -389,7 +390,7 @@ impl FetchLayer {
 
         // Charge first, send second. This is the only call to fetch_window.
         let sent_at = self.clock.now();
-        match budget::charge(store, pid, sent_at, entry.budget_limit).await {
+        match entry.budget.charge(store, pid, sent_at).await {
             Ok(true) => {}
             Ok(false) => {
                 // Lost a race for the last request of the day.

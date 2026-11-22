@@ -20,7 +20,6 @@ use super::{
 };
 use super::{channel_number_key, cutoff_secs, day_key};
 use crate::channels::TunerChannel;
-use crate::fetch::rawcache::{gunzip, gzip};
 use crate::merge::{
     MergeApplied, MergePlan, MergeStats, NewSlot, SlotWithObservations, StoredObservation,
 };
@@ -29,6 +28,7 @@ use crate::model::{
     canonical_id,
 };
 use crate::provider::ProviderChannel;
+use crate::store::rawbody::{gunzip, gzip};
 
 pub struct PostgresStore {
     pool: PgPool,
