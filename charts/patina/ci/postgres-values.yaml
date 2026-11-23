@@ -1,0 +1,24 @@
+# Postgres scenario: no PVC, database URL from a Secret.
+config: |
+  timezone = "America/Chicago"
+
+  [[providers]]
+  kind = "gracenote"
+  name = "gracenote"
+  daily_budget = 150
+
+  [[providers.lineups]]
+  name = "home"
+  lineup_id = "USA-OTA55401"
+  postal_code = "55401"
+  country = "USA"
+
+  [[sources]]
+  kind = "hdhomerun"
+  url = "http://192.168.1.50"
+  lineups = ["home"]
+
+database:
+  urlSecret:
+    name: patina-db
+    key: PATINA_DATABASE_URL

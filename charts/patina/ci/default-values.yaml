@@ -1,0 +1,19 @@
+# Default SQLite scenario with a minimal valid config.
+config: |
+  timezone = "America/Chicago"
+
+  [[providers]]
+  kind = "gracenote"
+  name = "gracenote"
+  daily_budget = 150
+
+  [[providers.lineups]]
+  name = "home"
+  lineup_id = "USA-OTA55401"
+  postal_code = "55401"
+  country = "USA"
+
+  [[sources]]
+  kind = "hdhomerun"
+  url = "http://192.168.1.50"
+  lineups = ["home"]

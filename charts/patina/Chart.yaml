@@ -1,0 +1,16 @@
+apiVersion: v2
+name: patina
+description: Groomed XMLTV guide service for Jellyfin
+type: application
+version: 0.1.0
+appVersion: "0.1.1"
+home: https://github.com/cyberglitchlabs/patina
+sources:
+  - https://github.com/cyberglitchlabs/patina
+keywords:
+  - xmltv
+  - jellyfin
+  - epg
+maintainers:
+  - name: cyberglitchlabs
+    url: https://github.com/cyberglitchlabs

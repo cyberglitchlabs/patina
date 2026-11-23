@@ -1,0 +1,114 @@
+# Default values for the patina chart.
+
+# -- Override the chart name used in resource names and labels.
+nameOverride: ""
+# -- Override the full resource name.
+fullnameOverride: ""
+
+image:
+  # -- Container image repository.
+  repository: ghcr.io/cyberglitchlabs/patina
+  # -- Image tag. Empty uses the chart appVersion.
+  tag: ""
+  # -- Image pull policy.
+  pullPolicy: IfNotPresent
+
+# -- Patina runs a single scheduler, so only 1 replica is allowed.
+replicaCount: 1
+
+# -- Patina configuration as a TOML string (the format of config.example.toml).
+# The chart owns `listen` and `database_url`; do not set them here.
+config: |
+  # timezone = "America/Chicago"
+  # horizon_days = 7
+  #
+  # [[providers]]
+  # kind = "gracenote"
+  # name = "gracenote"
+  # daily_budget = 150
+  #
+  # [[providers.lineups]]
+  # name = "home"
+  # lineup_id = "USA-OTA55401"
+  # postal_code = "55401"
+  # country = "USA"
+  #
+  # [[sources]]
+  # kind = "hdhomerun"
+  # url = "http://192.168.1.50"
+  # lineups = ["home"]
+
+# -- Optional channel override file contents. Mounted only if `config` names
+# it as `overrides_path`.
+overrides: ""
+
+# -- Name of an existing Secret holding PATINA_FEED_TOKEN and
+# PATINA_ADMIN_TOKEN. Empty makes the chart generate one.
+existingSecret: ""
+
+database:
+  urlSecret:
+    # -- Secret holding PATINA_DATABASE_URL for Postgres. Empty uses SQLite.
+    name: ""
+    # -- Key in that Secret.
+    key: PATINA_DATABASE_URL
+
+persistence:
+  # -- Create a PVC for /data (SQLite). Ignored when Postgres is used.
+  enabled: true
+  # -- PVC size.
+  size: 1Gi
+  # -- Storage class. Empty uses the cluster default.
+  storageClass: ""
+  # -- Use an existing PVC instead of creating one.
+  existingClaim: ""
+
+service:
+  # -- Service type.
+  type: ClusterIP
+  # -- Service port.
+  port: 8080
+
+ingress:
+  # -- Create an Ingress.
+  enabled: false
+  # -- Ingress class name.
+  className: ""
+  # -- Ingress annotations.
+  annotations: {}
+  # -- Ingress hosts, each with `host` and `paths` (list of `path`, `pathType`).
+  hosts: []
+  # -- Ingress TLS entries (`secretName`, `hosts`).
+  tls: []
+
+serviceMonitor:
+  # -- Create a Prometheus Operator ServiceMonitor.
+  enabled: false
+  # -- Scrape interval.
+  interval: 60s
+  # -- Extra labels for the ServiceMonitor.
+  labels: {}
+
+networkPolicy:
+  # -- Create a NetworkPolicy.
+  enabled: false
+  # -- Peers allowed to reach the pod (NetworkPolicyPeer list).
+  ingressFrom: []
+
+# -- Container resource requests and limits.
+resources: {}
+
+# -- Extra pod annotations.
+podAnnotations: {}
+
+# -- Pod node selector.
+nodeSelector: {}
+
+# -- Pod tolerations.
+tolerations: []
+
+# -- Pod affinity.
+affinity: {}
+
+# -- Extra container environment variables (EnvVar list).
+extraEnv: []
