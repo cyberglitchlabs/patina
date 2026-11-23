@@ -10,10 +10,12 @@ set -euo pipefail
 
 # Pinned tool and schema versions. This block is the single source of truth:
 # the Chart workflow reads it through `pins`, and Renovate bumps the lines that
-# carry a "renovate:" comment (see customManagers in renovate.json). Each check
-# below prints the installed tool version and fails if its major version (or
-# major.minor while a tool is still 0.x) differs from the pin; a patch or minor
-# difference is only printed.
+# carry a "renovate:" comment (see customManagers in renovate.json). The checks
+# for helm, helm-unittest, kubeconform and trivy print the installed version
+# and fail if its major version (or major.minor while a tool is still 0.x)
+# differs from the pin; a patch or minor difference is only printed. kind is
+# printed by `install` but not enforced; ct is installed by CI at CT_VERSION and
+# is not run by this script.
 # renovate: datasource=github-releases depName=helm/helm
 HELM_VERSION="4.3.1"
 # renovate: datasource=github-releases depName=helm-unittest/helm-unittest
@@ -41,7 +43,10 @@ INSTALL_SCENARIOS=(default existing-secret)
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHART="$ROOT/charts/patina"
-CRD_SCHEMA='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+# Pinned to a datreeio/CRDs-catalog commit so schemas cannot change under CI.
+# Bump: gh api repos/datreeio/CRDs-catalog/commits/main --jq .sha
+CRD_CATALOG_SHA="04af58d740718c4dc719441bf39fb284c784f4a8"
+CRD_SCHEMA="https://raw.githubusercontent.com/datreeio/CRDs-catalog/$CRD_CATALOG_SHA/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
 
 need() {
   # need <tool> <install hint>
@@ -129,11 +134,13 @@ kubeconform() {
 # trivy fails on HIGH and CRITICAL findings. With TRIVY_SARIF_FILE set it also
 # writes one SARIF file that merges the findings of every scenario (the
 # scenarios render the same templates, so results are de-duplicated); CI
-# uploads it to code scanning. The report is written before the gate can fail.
+# uploads it to code scanning. A failing scenario does not stop the loop: the
+# merged SARIF is written first, then the function fails if any scenario had
+# findings.
 trivy() {
   need trivy "brew install trivy (pinned: v$TRIVY_VERSION)"
   require_version trivy "$(command trivy --version | awk '/^Version:/ { print $2 }')" "$TRIVY_VERSION"
-  local f sarif_dir=""
+  local f sarif_dir="" rc=0
   if [ -n "${TRIVY_SARIF_FILE:-}" ]; then
     need jq "brew install jq"
     sarif_dir="$(mktemp -d)"
@@ -144,7 +151,7 @@ trivy() {
       command trivy config --helm-values "$f" --severity HIGH,CRITICAL --format sarif \
         --output "$sarif_dir/$(basename "$f" .yaml).sarif" "$CHART" >/dev/null
     fi
-    command trivy config --helm-values "$f" --severity HIGH,CRITICAL --exit-code 1 "$CHART"
+    command trivy config --helm-values "$f" --severity HIGH,CRITICAL --exit-code 1 "$CHART" || rc=1
   done
   if [ -n "$sarif_dir" ]; then
     jq -s '. as $all | $all[0] | .runs[0].results = ([$all[].runs[].results[]?] | unique_by([.ruleId, (.locations | tostring), .message.text]))
@@ -153,6 +160,7 @@ trivy() {
     rm -rf "$sarif_dir"
     echo "SARIF written to $TRIVY_SARIF_FILE"
   fi
+  return "$rc"
 }
 
 tokens() {

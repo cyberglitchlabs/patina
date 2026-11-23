@@ -78,8 +78,13 @@ and on `main`:
    no PVC with Postgres, checksum annotations, config handling).
 5. `trivy config --helm-values <scenario>` on the chart, failing on HIGH and
    CRITICAL, SARIF uploaded to code scanning. One policy scanner, not two.
-6. A kind cluster install test (`ct install`) that deploys the chart with
-   the `edge` image and waits for the pod to be Ready.
+6. A kind cluster install test, `scripts/chart-check.sh install`
+   (`helm upgrade --install --wait` per installable scenario, then a check
+   that `helm upgrade` keeps the generated tokens). It is not `ct install`
+   because the postgres and all-extras scenarios cannot come up in a bare
+   kind cluster (no database server, no ServiceMonitor CRD); the existing
+   Secret is pre-created; the image is built from the Dockerfile and loaded
+   into kind with `pullPolicy: Never` rather than pulling `edge`.
 7. `values.schema.json` and the README values table checked for drift
    (`helm-docs` in CI, failing on a diff).
 8. Renovate manages the chart's action pins and tool versions; actions are
