@@ -1,0 +1,91 @@
+# Helm chart design
+
+Status: approved by the maintainer on 2026-11-22.
+
+## Intent
+
+Give Kubernetes users a supported way to install Patina, replacing the raw
+`docs/examples/kubernetes.yaml`. The chart must be safe by default (tokens
+fail closed) and must be held to the same standard as the Rust code: every
+change to it is linted, rendered, schema-checked and install-tested in CI.
+
+## Goals
+
+- `charts/patina` installs a working Patina with SQLite on a PVC, or with
+  Postgres, from `values.yaml` alone.
+- Safe defaults: the pod security settings of the example manifest, and feed
+  and admin tokens that are never empty.
+- Config is values-driven: structured settings render to `patina.toml`.
+- Full lint and automation is mandatory (see CI below). A chart change that
+  skips any of it does not merge.
+
+## Non-goals
+
+- Publishing the chart (GHCR OCI) and release-please wiring. A later change,
+  and it needs the maintainer's go-ahead because publishing is public.
+- More than one replica. Patina runs a single scheduler.
+- Managing a Postgres server.
+
+## Approaches
+
+One sensible way: a conventional single Helm chart in `charts/patina`.
+Alternatives rejected: Kustomize (no values schema, weaker secret
+generation), a chart that wraps the raw manifest with `.Files` (no real
+templating of config), an operator (far too heavy for one pod).
+
+## Design
+
+- **Workload:** Deployment, 1 replica, `Recreate` strategy, user 65532,
+  read-only root filesystem, dropped capabilities, seccomp `RuntimeDefault`,
+  grace period 90 s, `/healthz` startup and readiness probes, exec liveness
+  probe `patina healthcheck`. `/data` is the only writable path. Pod
+  annotation checksums of the ConfigMap and chart-made Secret restart the pod
+  on change.
+- **Config:** `config:` in values renders to `patina.toml` with `toToml` into
+  a ConfigMap. Optional `overrides` text is mounted and `overrides_path` set.
+  `PATINA_DATABASE_URL` and `PATINA_LISTEN` are never put in the file.
+- **Tokens:** `existingSecret` names a user-made Secret. Otherwise the chart
+  makes one with random feed and admin tokens, kept across upgrades with
+  `lookup`.
+- **Storage:** PVC by default (`size`, `storageClass`), or
+  `persistence.existingClaim`. With Postgres (a Secret key holding
+  `PATINA_DATABASE_URL`) no PVC is created.
+- **Optional, off by default:** Ingress, ServiceMonitor (bearer token from the
+  Secret), NetworkPolicy.
+- **Values contract:** `values.schema.json` validates input; unknown or
+  mistyped keys fail at install time.
+- **Docs:** `charts/patina/README.md` (generated values table), README
+  Kubernetes section points at the chart, the raw example is removed.
+
+## CI and automation (mandatory)
+
+All in `.github/workflows`, running on pull requests that touch `charts/**`
+and on `main`:
+
+1. `helm lint --strict` on every values scenario.
+2. `helm template` for each scenario (default SQLite, Postgres, existing
+   secret, existing claim, all optional extras on), piped to `kubeconform`
+   with `-strict` against the pinned Kubernetes schemas and the
+   ServiceMonitor CRD schema.
+3. `chart-testing` (`ct lint`): chart version bump check, maintainers and
+   yamllint.
+4. `helm-unittest` suites covering the behaviours above (token generation,
+   no PVC with Postgres, checksum annotations, config rendering).
+5. `kube-linter` (or `kube-score`) policy check on rendered output.
+6. A kind cluster install test (`ct install`) that deploys the chart with
+   the `edge` image and waits for the pod to be Ready.
+7. `values.schema.json` and the README values table checked for drift
+   (`helm-docs` in CI, failing on a diff).
+8. Renovate manages the chart's action pins and tool versions; actions are
+   pinned by digest like the existing workflows.
+
+Local equivalents live in a script (`scripts/chart-check.sh`) so contributors
+run what CI runs; `CONTRIBUTING.md` and `AGENTS.md` say so.
+
+## Calls made by the author of this doc
+
+- Chart `version` starts at `0.1.0`; `appVersion` tracks the release.
+- Namespace is chosen with `helm install -n`; Service is ClusterIP.
+- Work happens on branch `feat/helm-chart` and lands through a PR.
+- Tool choice (kube-linter vs kube-score, helm-docs) is the implementer's
+  call; the requirement is that each check above exists and fails the build.
