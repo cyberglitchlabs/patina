@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.2](https://github.com/cyberglitchlabs/patina/compare/v0.1.1...v0.1.2) (2026-11-23)
+
+
+### Features
+
+* **chart:** chart skeleton, values contract and schema ([204c5d8](https://github.com/cyberglitchlabs/patina/commit/204c5d81cd0251cf18ab7c3596f8b2e2fc8c46a2))
+* **chart:** config ConfigMap with TOML validation ([eb22681](https://github.com/cyberglitchlabs/patina/commit/eb22681a4f61c170fe7d3ae3bada190ca95a260d))
+* **chart:** deployment, volume and service ([189911a](https://github.com/cyberglitchlabs/patina/commit/189911a6601c43d6b5f621c706a6923780933618))
+* **chart:** generated tokens kept across upgrades ([d32f3b8](https://github.com/cyberglitchlabs/patina/commit/d32f3b883b609389d86d98550364b4df71f3073c))
+* **chart:** Helm chart with lint, test and scan automation ([a9e2ced](https://github.com/cyberglitchlabs/patina/commit/a9e2ced5f796c7e6dcd8502efc7bee2611f58d39))
+* **chart:** optional ingress, servicemonitor and networkpolicy ([17d6ca0](https://github.com/cyberglitchlabs/patina/commit/17d6ca00644478b9a153850bcef4b323ce1f8d80))
+
+
+### Bug Fixes
+
+* **chart:** final review fixes (tokens in CI, real checksum test, default resources in values, label and interval handling, docs) ([6aad169](https://github.com/cyberglitchlabs/patina/commit/6aad1696ba1a064c20a4ca2dd270612d9d82287b))
+* **chart:** require exact overrides path and tighten Error check ([6f33931](https://github.com/cyberglitchlabs/patina/commit/6f339319faf50cf74d51fa938a73d93c59b70a47))
+
 ## [0.1.1](https://github.com/cyberglitchlabs/patina/compare/v0.1.0...v0.1.1) (2026-11-22)
 
 
