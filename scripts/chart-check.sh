@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run the Helm chart checks that CI runs.
-# Usage: scripts/chart-check.sh [lint|unittest|kubeconform|trivy|all]
+# Usage: scripts/chart-check.sh [lint|unittest|kubeconform|trivy|tokens|all]
 set -euo pipefail
 
 # Pinned tool and schema versions (Renovate and CI keep these in step).
@@ -69,17 +69,40 @@ trivy() {
   done
 }
 
+tokens() {
+  need helm "brew install helm"
+  echo "==> generated tokens (default-values.yaml)"
+  local out feed admin
+  out="$(helm template patina "$CHART" -f "$CHART/ci/default-values.yaml" --show-only templates/secret.yaml)"
+  feed="$(printf '%s\n' "$out" | sed -n 's/^  PATINA_FEED_TOKEN: "\(.*\)"$/\1/p')"
+  admin="$(printf '%s\n' "$out" | sed -n 's/^  PATINA_ADMIN_TOKEN: "\(.*\)"$/\1/p')"
+  local name value
+  for name in feed admin; do
+    value="${!name}"
+    if ! [[ "$value" =~ ^[A-Za-z0-9]{48}$ ]]; then
+      echo "error: $name token is not 48 chars of [A-Za-z0-9]: '$value'" >&2
+      exit 1
+    fi
+  done
+  if [ "$feed" = "$admin" ]; then
+    echo "error: feed and admin tokens are equal" >&2
+    exit 1
+  fi
+  echo "ok: two distinct 48-char alphanumeric tokens"
+}
+
 all() {
   lint
   unittest
   kubeconform
   trivy
+  tokens
 }
 
 case "${1:-all}" in
-  lint | unittest | kubeconform | trivy | all) "${1:-all}" ;;
+  lint | unittest | kubeconform | trivy | tokens | all) "${1:-all}" ;;
   *)
-    echo "usage: $0 [lint|unittest|kubeconform|trivy|all]" >&2
+    echo "usage: $0 [lint|unittest|kubeconform|trivy|tokens|all]" >&2
     exit 64
     ;;
 esac
