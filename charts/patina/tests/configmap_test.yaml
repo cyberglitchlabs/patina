@@ -83,7 +83,8 @@ tests:
 
         [[sources]]
         kind = "hdhomerun"
-        url = "http://192.168.1.51"
+        name = "second"
+        url = "http://192.168.1.50"
         overrides_path = "/etc/patina/overrides.toml"
       overrides: |
         [[override]]
@@ -101,3 +102,17 @@ tests:
       - matchRegex:
           path: data["patina.toml"]
           pattern: 'Error = "mine"'
+  - it: fails cleanly on a non-string overrides_path
+    set:
+      config: |
+        [[sources]]
+        kind = "hdhomerun"
+        url = "http://192.168.1.50"
+        overrides_path = 5
+      overrides: |
+        [[override]]
+        number = "5.6"
+        ignore = true
+    asserts:
+      - failedTemplate:
+          errorPattern: overrides_path

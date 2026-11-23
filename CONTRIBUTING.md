@@ -28,6 +28,7 @@ For people and agents alike. `AGENTS.md` points here, and the README links here.
 
 - Run `scripts/chart-check.sh all` before and after any change under `charts/patina`; it is what `.github/workflows/chart.yml` runs (`install` needs kind and is separate). Tool versions are pinned in the script.
 - Any change under `charts/patina` needs a `version` bump in `Chart.yaml`; `ct` enforces it on pull requests.
+- After a release, bump `appVersion` (and `version`) in `charts/patina/Chart.yaml` by hand; release-please does not touch it. If that is automated later (extra-files), the release PR also touches `charts/**`, so it needs a `version` bump too or `ct lint` (check-version-increment) fails.
 - The values table in `charts/patina/README.md` is generated: edit `values.yaml` comments (`# --`) or `README.md.gotmpl`, then run `scripts/chart-check.sh docs-update`.
 
 ## Documents

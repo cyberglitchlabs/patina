@@ -38,8 +38,9 @@ config: |
   # url = "http://192.168.1.50"
   # lineups = ["home"]
 
-# -- Optional channel override file contents. Mounted only if `config` names
-# it as `overrides_path`.
+# -- Optional channel override file contents. Requires `config` to set
+# `overrides_path = "/etc/patina/overrides.toml"` on a source (the render fails
+# otherwise).
 overrides: ""
 
 # -- Name of an existing Secret holding PATINA_FEED_TOKEN and
@@ -95,8 +96,13 @@ networkPolicy:
   # -- Peers allowed to reach the pod (NetworkPolicyPeer list).
   ingressFrom: []
 
-# -- Container resource requests and limits.
-resources: {}
+# -- Container resource requests and limits. Helm merges maps, so `resources: {}` keeps these defaults; set `resources: null` to remove them.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
 
 # -- Extra pod annotations.
 podAnnotations: {}

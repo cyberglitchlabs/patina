@@ -4,10 +4,8 @@ kind: ServiceMonitor
 metadata:
   name: {{ include "patina.fullname" . }}
   labels:
-    {{- include "patina.labels" . | nindent 4 }}
-    {{- with .Values.serviceMonitor.labels }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
+    {{- /* User labels win over chart labels, so no key appears twice. */}}
+    {{- mergeOverwrite (include "patina.labels" . | fromYaml) .Values.serviceMonitor.labels | toYaml | nindent 4 }}
 spec:
   selector:
     matchLabels:
@@ -15,7 +13,9 @@ spec:
   endpoints:
     - port: http
       path: /metrics
-      interval: {{ .Values.serviceMonitor.interval }}
+      {{- with .Values.serviceMonitor.interval }}
+      interval: {{ . | quote }}
+      {{- end }}
       # /metrics needs the admin token as a bearer token.
       authorization:
         type: Bearer

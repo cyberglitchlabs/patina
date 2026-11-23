@@ -45,7 +45,10 @@ INSTALL_SCENARIOS=(default existing-secret)
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHART="$ROOT/charts/patina"
-# Pinned to a datreeio/CRDs-catalog commit so schemas cannot change under CI.
+# The Kubernetes schemas ("-schema-location default" below) are fetched from
+# upstream at run time; only this CRD catalog is pinned, to a commit SHA, so
+# its schemas cannot change under CI.
+# Pinned to a datreeio/CRDs-catalog commit.
 # Bump: gh api repos/datreeio/CRDs-catalog/commits/main --jq .sha
 CRD_CATALOG_SHA="04af58d740718c4dc719441bf39fb284c784f4a8"
 CRD_SCHEMA="https://raw.githubusercontent.com/datreeio/CRDs-catalog/$CRD_CATALOG_SHA/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"

@@ -165,3 +165,35 @@ tests:
           path: spec.ingress
       - notExists:
           path: spec.egress
+  - it: lets serviceMonitor labels override chart labels without duplicating keys
+    template: templates/servicemonitor.yaml
+    set:
+      serviceMonitor:
+        enabled: true
+        labels:
+          app.kubernetes.io/version: custom
+          release: prometheus
+    asserts:
+      - equal:
+          path: metadata.labels["app.kubernetes.io/version"]
+          value: custom
+      - equal:
+          path: metadata.labels.release
+          value: prometheus
+  - it: quotes the interval and omits it when empty
+    template: templates/servicemonitor.yaml
+    set:
+      serviceMonitor:
+        enabled: true
+        interval: ""
+    asserts:
+      - notExists:
+          path: spec.endpoints[0].interval
+  - it: renders the default interval as a string
+    template: templates/servicemonitor.yaml
+    set:
+      serviceMonitor.enabled: true
+    asserts:
+      - equal:
+          path: spec.endpoints[0].interval
+          value: 60s

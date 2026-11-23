@@ -90,15 +90,7 @@ spec:
             timeoutSeconds: 5
             failureThreshold: 3
           resources:
-            {{- if .Values.resources }}
-            {{- toYaml .Values.resources | nindent 12 }}
-            {{- else }}
-            requests:
-              cpu: 50m
-              memory: 64Mi
-            limits:
-              memory: 256Mi
-            {{- end }}
+            {{- toYaml (.Values.resources | default dict) | nindent 12 }}
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false

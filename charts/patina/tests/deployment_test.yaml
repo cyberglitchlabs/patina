@@ -96,7 +96,7 @@ tests:
           value:
             name: http
             containerPort: 8080
-  - it: lets values override resources
+  - it: merges values over the default resources
     template: templates/deployment.yaml
     set:
       resources:
@@ -106,8 +106,19 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].resources
           value:
+            requests:
+              cpu: 50m
+              memory: 64Mi
             limits:
               memory: 512Mi
+  - it: removes resources with null
+    template: templates/deployment.yaml
+    set:
+      resources: null
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources
+          value: {}
   - it: reads tokens from the generated secret and points at the config file
     template: templates/deployment.yaml
     asserts:
@@ -192,14 +203,24 @@ tests:
           pattern: '^[0-9a-f]{64}$'
       - notExists:
           path: spec.template.metadata.annotations["checksum/secret"]
-  - it: changes the config checksum when config changes
+  # The pinned values hash the rendered ConfigMap, whose labels carry the chart
+  # version: after a Chart.yaml version bump, update them from the failure output.
+  - it: pins the config checksum for config A
     template: templates/deployment.yaml
     set:
       config: "timezone = \"America/Chicago\"\n"
     asserts:
-      - notEqual:
+      - equal:
           path: spec.template.metadata.annotations["checksum/config"]
-          value: "0000000000000000000000000000000000000000000000000000000000000000"
+          value: 925fbefcb1bc5ec7ed714f897049359c522af19345345cfd8bc9661b33713121
+  - it: pins a different config checksum for config B
+    template: templates/deployment.yaml
+    set:
+      config: "timezone = \"UTC\"\n"
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations["checksum/config"]
+          value: 44d9a5fad30defc0ad29f943e40641a5e96f77fe3eebbe4943585e4d6cfe3d29
   - it: merges podAnnotations, nodeSelector, tolerations, affinity and extraEnv
     template: templates/deployment.yaml
     set:

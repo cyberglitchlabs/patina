@@ -32,3 +32,9 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: /persistence/size
+  - it: rejects an empty database url secret key
+    set:
+      database.urlSecret.key: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: /database/urlSecret/key

@@ -63,9 +63,12 @@ jobs:
         with:
           version: v${{ env.HELM_VERSION }}
       - name: Install helm-unittest
-        # The plugin ships no signature, so Helm 4 needs --verify=false.
+        # Installed by exact tag with --verify=false: the plugin ships no
+        # signature or checksum, so Helm 4 cannot verify it.
         run: helm plugin install https://github.com/helm-unittest/helm-unittest --version "v${HELM_UNITTEST_VERSION}" --verify=false
       - run: scripts/chart-check.sh unittest
+      # tokens needs only helm, so it shares this job.
+      - run: scripts/chart-check.sh tokens
 
   kubeconform:
     runs-on: ubuntu-latest

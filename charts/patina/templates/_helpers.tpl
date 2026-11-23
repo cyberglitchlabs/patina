@@ -60,7 +60,7 @@ Only a sole string-valued Error key counts as failure; a config that is exactly
 {{- if .Values.overrides }}
 {{- $found := false }}
 {{- range $s := (get $cfg "sources" | default list) }}
-{{- if and (kindIs "map" $s) (eq (get $s "overrides_path" | default "") "/etc/patina/overrides.toml") }}
+{{- if and (kindIs "map" $s) (eq (toString (get $s "overrides_path" | default "")) "/etc/patina/overrides.toml") }}
 {{- $found = true }}
 {{- end }}
 {{- end }}

@@ -70,7 +70,9 @@ kubectl -n patina get secret patina -o jsonpath='{.data.PATINA_FEED_TOKEN}' | ba
 kubectl -n patina get secret patina -o jsonpath='{.data.PATINA_ADMIN_TOKEN}' | base64 -d; echo
 ```
 
-(The Secret is named `<release>-patina` if the release name does not contain `patina`; `helm install` prints the exact commands.) Because the lookup needs a cluster, offline `helm template` and `helm diff` without a reachable cluster show fresh random tokens each time. That is expected, not drift.
+(The Secret is named `<release>-patina` if the release name does not contain `patina`; `helm install` prints the exact commands.) To rotate generated tokens, delete the Secret and run `helm upgrade`; the pod restarts with new tokens. With `existingSecret` the chart cannot see changes to the Secret, so run `kubectl rollout restart` after changing it. One extra pod restart can happen on the first `helm upgrade` after install (the secret checksum is computed from a render that differs from the stored tokens at install time); later upgrades are stable.
+
+Because the lookup needs a cluster, offline `helm template` and `helm diff` without a reachable cluster show fresh random tokens each time. That is expected, not drift.
 
 **Bring your own (`existingSecret`).** Create a Secret in the release namespace with both keys and name it in `existingSecret`:
 
@@ -91,13 +93,18 @@ The whole Secret is loaded as environment variables (`envFrom`), so a missing ke
 - **Default:** a PersistentVolumeClaim for `/data` (SQLite). Set `persistence.size` and `persistence.storageClass` as needed.
 - **Existing claim:** `persistence.existingClaim` mounts a claim you manage; the chart creates none.
 - **No persistence:** `persistence.enabled=false` uses an emptyDir. The guide is lost whenever the pod restarts and is rebuilt from the providers (which spends request budget). Use it for trials only.
-- **Postgres:** set `database.urlSecret.name` (and `key`, default `PATINA_DATABASE_URL`) to a Secret holding the connection URL, for example `postgres://patina:password@db.example:5432/patina?sslmode=require`. The chart then creates no PVC and `/data` is an emptyDir for scratch files. Setting both `database.urlSecret.name` and `persistence.existingClaim` fails the render.
+- **Postgres:** set `database.urlSecret.name` (and `key`, default `PATINA_DATABASE_URL`) to a Secret holding the connection URL, for example `postgres://patina:password@db.example:5432/patina?sslmode=require`. The chart then creates no PVC (`persistence.enabled` is ignored) and `/data` is an emptyDir for scratch files. Setting both `database.urlSecret.name` and `persistence.existingClaim` fails the render.
 
 ## Optional extras
 
 - **Ingress** (`ingress.enabled`): set `className`, `hosts` and `tls`, for example host `patina.example.com`. Patina speaks plain HTTP, and feed URLs carry the feed token, so use TLS.
 - **ServiceMonitor** (`serviceMonitor.enabled`): needs the Prometheus Operator CRDs in the cluster. `/metrics` requires the admin token as a bearer token, so the ServiceMonitor reads key `PATINA_ADMIN_TOKEN` from the token Secret (generated or `existingSecret`); that key must exist. Set `serviceMonitor.labels` to match your Prometheus selector.
 - **NetworkPolicy** (`networkPolicy.enabled`): allows ingress to the pod from the peers in `networkPolicy.ingressFrom`. An empty list denies all ingress, which includes Jellyfin and Prometheus, so list them. The policy has no egress rules, so egress is not restricted.
+
+## Pitfalls
+
+- Do not put `PATINA_CONFIG` in `extraEnv`: the chart already sets it, and a duplicate name makes the last one win.
+- Changing `nameOverride` or `fullnameOverride` on an existing release renames the chart-made PVC, and Helm deletes the old one together with the SQLite guide. Use `persistence.existingClaim` to keep the data across a rename.
 
 ## Upgrade and uninstall
 
@@ -128,9 +135,9 @@ scripts/chart-check.sh all      # lint, unittest, kubeconform, trivy, tokens, do
 | `install` | installs the bootable scenarios in a kind cluster and checks that `helm upgrade` keeps the tokens; needs kind and a local `patina:ci` image, so `all` does not run it |
 | `pins` | prints the pinned tool versions as `KEY=value` lines |
 
-The tools and their pinned versions live at the top of the script (Renovate bumps them); the script prints the installed version and fails on a major mismatch. The `Chart` workflow (`.github/workflows/chart.yml`) runs each function as its own job, plus `ct lint`. The SARIF upload to code scanning and the `ct` chart version bump check only do real work on a pull request, so they first run when you open one.
+The tools and their pinned versions live at the top of the script (Renovate bumps them); the script prints the installed version and fails on a major mismatch. The `Chart` workflow (`.github/workflows/chart.yml`) runs `lint`, `unittest` (with `tokens`), `kubeconform`, `trivy`, `docs` and `install` as jobs, plus `ct lint`. On pull requests from forks the SARIF upload is skipped, and the `ct` chart version bump check only does real work on a pull request, so it first runs when you open one.
 
-Any change under `charts/patina` needs a `version` bump in `Chart.yaml`; `ct` enforces it on pull requests.
+Any change under `charts/patina` needs a `version` bump in `Chart.yaml`; `ct` enforces it on pull requests. After a release, bump `appVersion` (and `version`) in `Chart.yaml` by hand; release-please does not touch it.
 
 ## Values
 
@@ -155,14 +162,14 @@ Any change under `charts/patina` needs a `version` bump in `Chart.yaml`; `ct` en
 | networkPolicy.enabled | bool | `false` | Create a NetworkPolicy. |
 | networkPolicy.ingressFrom | list | `[]` | Peers allowed to reach the pod (NetworkPolicyPeer list). |
 | nodeSelector | object | `{}` | Pod node selector. |
-| overrides | string | `""` | Optional channel override file contents. Mounted only if `config` names it as `overrides_path`. |
+| overrides | string | `""` | Optional channel override file contents. Requires `config` to set `overrides_path = "/etc/patina/overrides.toml"` on a source (the render fails otherwise). |
 | persistence.enabled | bool | `true` | Create a PVC for /data (SQLite). Ignored when Postgres is used. |
 | persistence.existingClaim | string | `""` | Use an existing PVC instead of creating one. |
 | persistence.size | string | `"1Gi"` | PVC size. |
 | persistence.storageClass | string | `""` | Storage class. Empty uses the cluster default. |
 | podAnnotations | object | `{}` | Extra pod annotations. |
 | replicaCount | int | `1` | Patina runs a single scheduler, so only 1 replica is allowed. |
-| resources | object | `{}` | Container resource requests and limits. |
+| resources | object | `{"limits":{"memory":"256Mi"},"requests":{"cpu":"50m","memory":"64Mi"}}` | Container resource requests and limits. Helm merges maps, so `resources: {}` keeps these defaults; set `resources: null` to remove them. |
 | service.port | int | `8080` | Service port. |
 | service.type | string | `"ClusterIP"` | Service type. |
 | serviceMonitor.enabled | bool | `false` | Create a Prometheus Operator ServiceMonitor. |
