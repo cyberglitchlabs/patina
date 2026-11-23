@@ -41,9 +41,14 @@ templating of config), an operator (far too heavy for one pod).
   probe `patina healthcheck`. `/data` is the only writable path. Pod
   annotation checksums of the ConfigMap and chart-made Secret restart the pod
   on change.
-- **Config:** `config:` in values renders to `patina.toml` with `toToml` into
-  a ConfigMap. Optional `overrides` text is mounted and `overrides_path` set.
-  `PATINA_DATABASE_URL` and `PATINA_LISTEN` are never put in the file.
+- **Config:** `config:` in values is a plain TOML string (the format of
+  `config.example.toml`), written to a ConfigMap as `patina.toml`. It is not
+  rendered from structured values: Helm's `toToml` writes every number as a
+  float (`daily_budget = 150.0`), which Patina's integer settings reject
+  (verified 2026-11-22). The template parses the string with `mustFromToml`
+  so a syntax error fails the install, and fails if it sets `listen` or
+  `database_url` (the chart owns those). Optional `overrides` text is mounted
+  and the template fails unless the TOML names it as `overrides_path`.
 - **Tokens:** `existingSecret` names a user-made Secret. Otherwise the chart
   makes one with random feed and admin tokens, kept across upgrades with
   `lookup`.
@@ -66,12 +71,13 @@ and on `main`:
 2. `helm template` for each scenario (default SQLite, Postgres, existing
    secret, existing claim, all optional extras on), piped to `kubeconform`
    with `-strict` against the pinned Kubernetes schemas and the
-   ServiceMonitor CRD schema.
+   ServiceMonitor CRD (Datree CRDs-catalog as a second schema location).
 3. `chart-testing` (`ct lint`): chart version bump check, maintainers and
    yamllint.
 4. `helm-unittest` suites covering the behaviours above (token generation,
-   no PVC with Postgres, checksum annotations, config rendering).
-5. `kube-linter` (or `kube-score`) policy check on rendered output.
+   no PVC with Postgres, checksum annotations, config handling).
+5. `trivy config --helm-values <scenario>` on the chart, failing on HIGH and
+   CRITICAL, SARIF uploaded to code scanning. One policy scanner, not two.
 6. A kind cluster install test (`ct install`) that deploys the chart with
    the `edge` image and waits for the pod to be Ready.
 7. `values.schema.json` and the README values table checked for drift
@@ -87,5 +93,7 @@ run what CI runs; `CONTRIBUTING.md` and `AGENTS.md` say so.
 - Chart `version` starts at `0.1.0`; `appVersion` tracks the release.
 - Namespace is chosen with `helm install -n`; Service is ClusterIP.
 - Work happens on branch `feat/helm-chart` and lands through a PR.
-- Tool choice (kube-linter vs kube-score, helm-docs) is the implementer's
-  call; the requirement is that each check above exists and fails the build.
+- Scanner is Trivy (chosen after checking current docs, 2026-11-22). The
+  helm-docs drift check needs its current state confirmed before use; any
+  equivalent that fails on a stale values table is fine.
+- Standalone chart, not a bjw-s `app-template` wrapper (the maintainer's call).
