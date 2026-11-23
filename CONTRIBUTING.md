@@ -24,6 +24,12 @@ For people and agents alike. `AGENTS.md` points here, and the README links here.
 - Run the whole `tests/` suite first and again at the end. Every test that passed before passes after, and the golden XMLTV file is unchanged.
 - After any scripted bulk edit (`sed` and the like), run `cargo fmt`.
 
+## Helm chart
+
+- Run `scripts/chart-check.sh all` before and after any change under `charts/patina`; it is what `.github/workflows/chart.yml` runs (`install` needs kind and is separate). Tool versions are pinned in the script.
+- Any change under `charts/patina` needs a `version` bump in `Chart.yaml`; `ct` enforces it on pull requests.
+- The values table in `charts/patina/README.md` is generated: edit `values.yaml` comments (`# --`) or `README.md.gotmpl`, then run `scripts/chart-check.sh docs-update`.
+
 ## Documents
 
 | File | Holds | Who writes it |
@@ -31,6 +37,6 @@ For people and agents alike. `AGENTS.md` points here, and the README links here.
 | `GLOSSARY.md` | Shared vocabulary | Anyone; each change is a reviewed diff |
 | `docs/adr/` | Hard-to-reverse choices made after v1 | Whoever makes the choice; facts checked with the session that holds them |
 | `docs/superpowers/specs/2026-10-31-patina-design.md` | v1 intent, goals, anti-goals | Frozen |
-| `docs/operations.md`, `docs/examples/` | Running the service | Deployment/operations |
+| `docs/operations.md`, `charts/patina/README.md` | Running the service | Deployment/operations |
 
 The user decides design questions and who owns which document. An agent recommends, checks facts and writes down what was settled; a decision that lives only in a chat is lost.

@@ -107,7 +107,7 @@ Notes about the image:
   configured) with a 3 s timeout; exit 0 only on HTTP 200 with body `ok`. You can
   run it yourself: `docker exec patina /usr/local/bin/patina healthcheck`.
 - `docker stop` sends SIGTERM; Patina finishes the guide window it is merging
-  and exits with code 0. Allow up to 90 seconds (see the Kubernetes example).
+  and exits with code 0. Allow up to 90 seconds (the Helm chart sets this).
 
 ## Container image
 
@@ -248,10 +248,16 @@ container). Patina creates and migrates its own tables at startup.
 
 ## Kubernetes
 
-[`docs/examples/kubernetes.yaml`](docs/examples/kubernetes.yaml) is a complete
-example: a Deployment (1 replica, PVC at `/data`, `readOnlyRootFilesystem`,
-`runAsNonRoot`, `terminationGracePeriodSeconds: 90`, probes), a ConfigMap for
-the TOML, a Secret for the tokens, and a Service.
+The Helm chart in [`charts/patina`](charts/patina/README.md) deploys Patina:
+one replica with a `Recreate` rollout, a PVC at `/data` (or Postgres), a
+read-only root filesystem, a 90 second grace period, generated or existing
+token Secrets, and optional Ingress, ServiceMonitor and NetworkPolicy. **The
+chart is not published yet** (no OCI chart, no Helm repository): install it
+from a checkout.
+
+```sh
+helm install patina charts/patina -n patina --create-namespace -f my-values.yaml
+```
 
 ## Security notes
 
