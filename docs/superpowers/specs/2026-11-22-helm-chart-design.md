@@ -98,7 +98,5 @@ run what CI runs; `CONTRIBUTING.md` and `AGENTS.md` say so.
 - Chart `version` starts at `0.1.0`; `appVersion` tracks the release.
 - Namespace is chosen with `helm install -n`; Service is ClusterIP.
 - Work happens on branch `feat/helm-chart` and lands through a PR.
-- Scanner is Trivy (chosen after checking current docs, 2026-11-22). The
-  helm-docs drift check needs its current state confirmed before use; any
-  equivalent that fails on a stale values table is fine.
+- Scanner is Trivy (chosen after checking current docs, 2026-11-22). helm-docs v1.14.2 was confirmed (2026-11-22: repo active, last release 2024-07-08) and adopted for the values-table drift check (`scripts/chart-check.sh docs`).
 - Standalone chart, not a bjw-s `app-template` wrapper (the maintainer's call).
