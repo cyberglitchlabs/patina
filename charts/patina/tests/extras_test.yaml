@@ -1,0 +1,167 @@
+suite: optional extras
+templates:
+  - templates/ingress.yaml
+  - templates/servicemonitor.yaml
+  - templates/networkpolicy.yaml
+tests:
+  - it: renders none of the extras by default
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: ingress routes each host path to the http service port
+    template: templates/ingress.yaml
+    set:
+      ingress:
+        enabled: true
+        className: nginx
+        annotations:
+          example.com/a: b
+        hosts:
+          - host: patina.example.com
+            paths:
+              - path: /
+                pathType: Prefix
+        tls:
+          - secretName: patina-tls
+            hosts:
+              - patina.example.com
+    asserts:
+      - isKind:
+          of: Ingress
+      - equal:
+          path: apiVersion
+          value: networking.k8s.io/v1
+      - equal:
+          path: spec.ingressClassName
+          value: nginx
+      - equal:
+          path: metadata.annotations
+          value:
+            example.com/a: b
+      - equal:
+          path: spec.rules
+          value:
+            - host: patina.example.com
+              http:
+                paths:
+                  - path: /
+                    pathType: Prefix
+                    backend:
+                      service:
+                        name: RELEASE-NAME-patina
+                        port:
+                          name: http
+      - equal:
+          path: spec.tls
+          value:
+            - secretName: patina-tls
+              hosts:
+                - patina.example.com
+      - notExists:
+          path: metadata.namespace
+  - it: ingress omits className and tls when unset and defaults the path
+    template: templates/ingress.yaml
+    set:
+      ingress:
+        enabled: true
+        hosts:
+          - host: patina.example.com
+    asserts:
+      - notExists:
+          path: spec.ingressClassName
+      - notExists:
+          path: spec.tls
+      - equal:
+          path: spec.rules[0].http.paths[0].path
+          value: /
+      - equal:
+          path: spec.rules[0].http.paths[0].pathType
+          value: Prefix
+  - it: servicemonitor scrapes /metrics on http with the admin token
+    template: templates/servicemonitor.yaml
+    set:
+      serviceMonitor:
+        enabled: true
+        interval: 30s
+        labels:
+          release: prometheus
+    asserts:
+      - isKind:
+          of: ServiceMonitor
+      - equal:
+          path: apiVersion
+          value: monitoring.coreos.com/v1
+      - equal:
+          path: metadata.labels.release
+          value: prometheus
+      - equal:
+          path: spec.selector.matchLabels
+          value:
+            app.kubernetes.io/name: patina
+            app.kubernetes.io/instance: RELEASE-NAME
+      - equal:
+          path: spec.endpoints
+          value:
+            - port: http
+              path: /metrics
+              interval: 30s
+              authorization:
+                type: Bearer
+                credentials:
+                  name: RELEASE-NAME-patina
+                  key: PATINA_ADMIN_TOKEN
+  - it: servicemonitor uses the existing secret name
+    template: templates/servicemonitor.yaml
+    set:
+      serviceMonitor:
+        enabled: true
+      existingSecret: my-secret
+    asserts:
+      - equal:
+          path: spec.endpoints[0].authorization.credentials.name
+          value: my-secret
+  - it: networkpolicy allows the http port only from the listed peers
+    template: templates/networkpolicy.yaml
+    set:
+      networkPolicy:
+        enabled: true
+        ingressFrom:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: jellyfin
+    asserts:
+      - isKind:
+          of: NetworkPolicy
+      - equal:
+          path: spec.podSelector.matchLabels
+          value:
+            app.kubernetes.io/name: patina
+            app.kubernetes.io/instance: RELEASE-NAME
+      - equal:
+          path: spec.policyTypes
+          value:
+            - Ingress
+      - equal:
+          path: spec.ingress
+          value:
+            - from:
+                - namespaceSelector:
+                    matchLabels:
+                      kubernetes.io/metadata.name: jellyfin
+              ports:
+                - port: http
+                  protocol: TCP
+  - it: networkpolicy with no peers allows no ingress and adds no egress
+    template: templates/networkpolicy.yaml
+    set:
+      networkPolicy:
+        enabled: true
+    asserts:
+      - equal:
+          path: spec.policyTypes
+          value:
+            - Ingress
+      - notExists:
+          path: spec.ingress
+      - notExists:
+          path: spec.egress
