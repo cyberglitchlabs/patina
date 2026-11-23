@@ -119,6 +119,22 @@ jobs:
           sarif_file: trivy-chart.sarif
           category: chart-trivy
 
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read tool pins
+        run: scripts/chart-check.sh pins >> "$GITHUB_ENV"
+      - name: Install helm-docs
+        # go install is verified by the Go checksum database.
+        run: |
+          GOBIN="$RUNNER_TEMP/bin" go install "github.com/norwoodj/helm-docs/cmd/helm-docs@v${HELM_DOCS_VERSION}"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: scripts/chart-check.sh docs
+
   ct-lint:
     runs-on: ubuntu-latest
     timeout-minutes: 15

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run the Helm chart checks that CI runs.
-# Usage: scripts/chart-check.sh [lint|unittest|kubeconform|trivy|tokens|install|pins|all]
+# Usage: scripts/chart-check.sh [lint|unittest|kubeconform|trivy|tokens|docs|docs-update|install|pins|all]
 #
 # `install` needs a running kind cluster and a local image named patina:ci
 # (docker build -t patina:ci .); `all` does not run it. `pins` prints the tool
@@ -11,7 +11,7 @@ set -euo pipefail
 # Pinned tool and schema versions. This block is the single source of truth:
 # the Chart workflow reads it through `pins`, and Renovate bumps the lines that
 # carry a "renovate:" comment (see customManagers in renovate.json). The checks
-# for helm, helm-unittest, kubeconform and trivy print the installed version
+# for helm, helm-unittest, kubeconform, trivy and helm-docs print the installed version
 # and fail if its major version (or major.minor while a tool is still 0.x)
 # differs from the pin; a patch or minor difference is only printed. kind is
 # printed by `install` but not enforced; ct is installed by CI at CT_VERSION and
@@ -24,6 +24,8 @@ HELM_UNITTEST_VERSION="1.2.1"
 KUBECONFORM_VERSION="0.8.0"
 # renovate: datasource=github-releases depName=aquasecurity/trivy
 TRIVY_VERSION="0.76.2"
+# renovate: datasource=github-releases depName=norwoodj/helm-docs
+HELM_DOCS_VERSION="1.14.2"
 # renovate: datasource=github-releases depName=kubernetes-sigs/kind
 KIND_VERSION="0.33.0"
 # renovate: datasource=github-releases depName=helm/chart-testing
@@ -87,6 +89,7 @@ pins() {
     HELM_VERSION "$HELM_VERSION" \
     HELM_UNITTEST_VERSION "$HELM_UNITTEST_VERSION" \
     KUBECONFORM_VERSION "$KUBECONFORM_VERSION" \
+    HELM_DOCS_VERSION "$HELM_DOCS_VERSION" \
     TRIVY_VERSION "$TRIVY_VERSION" \
     KIND_VERSION "$KIND_VERSION" \
     CT_VERSION "$CT_VERSION" \
@@ -185,6 +188,34 @@ tokens() {
   echo "ok: two distinct 48-char alphanumeric tokens"
 }
 
+# helm-docs writes charts/patina/README.md from README.md.gotmpl and the
+# `# --` comments in values.yaml. `docs` regenerates into a scratch copy and
+# fails when the committed README differs; `docs-update` rewrites it.
+docs_run() {
+  need helm-docs "brew install helm-docs (pinned: v$HELM_DOCS_VERSION)"
+  require_version helm-docs "$(command helm-docs --version | awk '{ print $NF }')" "$HELM_DOCS_VERSION"
+  command helm-docs --chart-search-root "$1" --log-level warning
+}
+
+docs() {
+  echo "==> helm-docs drift"
+  local tmp
+  tmp="$(mktemp -d)"
+  cp -R "$CHART" "$tmp/patina"
+  docs_run "$tmp"
+  if ! diff -u "$CHART/README.md" "$tmp/patina/README.md"; then
+    rm -rf "$tmp"
+    echo "error: charts/patina/README.md is stale; run scripts/chart-check.sh docs-update" >&2
+    exit 1
+  fi
+  rm -rf "$tmp"
+  echo "ok: README.md matches values.yaml and README.md.gotmpl"
+}
+
+docs_update() {
+  docs_run "$CHART"
+}
+
 # diagnose <namespace>: print what a failed install needs for debugging.
 diagnose() {
   kubectl -n "$1" get pods -o wide || true
@@ -254,12 +285,14 @@ all() {
   kubeconform
   trivy
   tokens
+  docs
 }
 
 case "${1:-all}" in
-  lint | unittest | kubeconform | trivy | tokens | install | pins | all) "${1:-all}" ;;
+  docs-update) docs_update ;;
+  lint | unittest | kubeconform | trivy | tokens | docs | install | pins | all) "${1:-all}" ;;
   *)
-    echo "usage: $0 [lint|unittest|kubeconform|trivy|tokens|install|pins|all]" >&2
+    echo "usage: $0 [lint|unittest|kubeconform|trivy|tokens|docs|docs-update|install|pins|all]" >&2
     exit 64
     ;;
 esac
