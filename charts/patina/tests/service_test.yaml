@@ -1,0 +1,43 @@
+suite: service
+templates:
+  - templates/service.yaml
+tests:
+  - it: exposes port 8080 named http as ClusterIP
+    asserts:
+      - isKind:
+          of: Service
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-patina
+      - equal:
+          path: spec.type
+          value: ClusterIP
+      - equal:
+          path: spec.ports
+          value:
+            - name: http
+              port: 8080
+              targetPort: http
+              protocol: TCP
+      - equal:
+          path: spec.selector
+          value:
+            app.kubernetes.io/name: patina
+            app.kubernetes.io/instance: RELEASE-NAME
+      - notExists:
+          path: metadata.namespace
+  - it: honours service type and port
+    set:
+      service:
+        type: NodePort
+        port: 9090
+    asserts:
+      - equal:
+          path: spec.type
+          value: NodePort
+      - equal:
+          path: spec.ports[0].port
+          value: 9090
+      - equal:
+          path: spec.ports[0].targetPort
+          value: http

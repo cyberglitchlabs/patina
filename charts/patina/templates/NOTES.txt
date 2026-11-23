@@ -1,0 +1,19 @@
+Patina {{ .Chart.AppVersion }} is installed as {{ include "patina.fullname" . }}.
+
+{{- if .Values.existingSecret }}
+Tokens come from the Secret "{{ .Values.existingSecret }}" (keys PATINA_FEED_TOKEN and PATINA_ADMIN_TOKEN).
+{{- else }}
+Read the generated tokens:
+
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "patina.secretName" . }} -o jsonpath='{.data.PATINA_FEED_TOKEN}' | base64 -d; echo
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "patina.secretName" . }} -o jsonpath='{.data.PATINA_ADMIN_TOKEN}' | base64 -d; echo
+{{- end }}
+
+Reach the service from your machine:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "patina.fullname" . }} 8080:{{ .Values.service.port }}
+
+Feed URL shape (all sources in one guide, or one source by name):
+
+  http://<host>:{{ .Values.service.port }}/xmltv/all.xml?token=<PATINA_FEED_TOKEN>
+  http://<host>:{{ .Values.service.port }}/t/<PATINA_FEED_TOKEN>/xmltv/<source>.xml
