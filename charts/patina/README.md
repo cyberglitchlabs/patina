@@ -84,7 +84,7 @@ kubectl -n patina create secret generic patina-tokens \
 existingSecret: patina-tokens
 ```
 
-The whole Secret is loaded as environment variables (`envFrom`), so a missing key is not an error: the pod starts and that endpoint is **open**. A key that is present but empty is treated as unset too, and startup warns about it. Patina logs `endpoint authentication` as `enabled` or `disabled` for each token; check it after install.
+The whole Secret is loaded as environment variables (`envFrom`), so a missing key is not an error: the pod starts, and that endpoint is **open** unless `config` sets `feed_token` or `admin_token` itself (environment variables win over the file, and the file's token applies when the variable is absent or empty). A key that is present but empty counts as unset too: startup logs a warning (endpoints OPEN) when `config` sets no token for it, and only an info line when it does. Patina logs `endpoint authentication` as `enabled` or `disabled` for each token; check it after install.
 
 ## Storage
 

@@ -80,9 +80,12 @@ jobs:
         with:
           version: v${{ env.HELM_VERSION }}
       - name: Install kubeconform
-        # go install is verified by the Go checksum database.
+        # go install is verified by the Go checksum database. A go install
+        # build is not stamped by goreleaser, so stamp the version with
+        # ldflags; the script's version check reads it from `kubeconform -v`.
+        # Go comes from the runner's preinstalled toolchain.
         run: |
-          GOBIN="$RUNNER_TEMP/bin" go install "github.com/yannh/kubeconform/cmd/kubeconform@v${KUBECONFORM_VERSION}"
+          GOBIN="$RUNNER_TEMP/bin" go install -ldflags "-X main.version=v${KUBECONFORM_VERSION}" "github.com/yannh/kubeconform/cmd/kubeconform@v${KUBECONFORM_VERSION}"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - run: scripts/chart-check.sh kubeconform
 
@@ -129,9 +132,11 @@ jobs:
       - name: Read tool pins
         run: scripts/chart-check.sh pins >> "$GITHUB_ENV"
       - name: Install helm-docs
-        # go install is verified by the Go checksum database.
+        # go install is verified by the Go checksum database. Go comes from the
+        # runner's preinstalled toolchain. Only goreleaser builds stamp the
+        # version, so stamp it here; without it helm-docs has no --version flag.
         run: |
-          GOBIN="$RUNNER_TEMP/bin" go install "github.com/norwoodj/helm-docs/cmd/helm-docs@v${HELM_DOCS_VERSION}"
+          GOBIN="$RUNNER_TEMP/bin" go install -ldflags "-X main.version=${HELM_DOCS_VERSION}" "github.com/norwoodj/helm-docs/cmd/helm-docs@v${HELM_DOCS_VERSION}"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - run: scripts/chart-check.sh docs
 
