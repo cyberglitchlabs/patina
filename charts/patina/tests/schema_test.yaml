@@ -2,23 +2,33 @@ suite: values schema
 templates:
   - templates/configmap.yaml
 tests:
+  - it: renders valid values
+    values:
+      - ../ci/default-values.yaml
+    asserts:
+      - isKind:
+          of: ConfigMap
   - it: rejects more than one replica
     set:
       replicaCount: 2
     asserts:
-      - failedTemplate: {}
+      - failedTemplate:
+          errorPattern: replicaCount
   - it: rejects an unknown top-level key
     set:
       bogus: 1
     asserts:
-      - failedTemplate: {}
+      - failedTemplate:
+          errorPattern: bogus
   - it: rejects a non-integer service port
     set:
       service.port: "x"
     asserts:
-      - failedTemplate: {}
+      - failedTemplate:
+          errorPattern: port
   - it: rejects a non-string persistence size
     set:
       persistence.size: 5
     asserts:
-      - failedTemplate: {}
+      - failedTemplate:
+          errorPattern: size

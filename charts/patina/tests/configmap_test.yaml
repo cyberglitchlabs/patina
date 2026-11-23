@@ -1,0 +1,64 @@
+suite: config configmap
+templates:
+  - templates/configmap.yaml
+tests:
+  - it: passes the config string through untouched
+    set:
+      config: |
+        daily_budget = 150
+    asserts:
+      - matchRegex:
+          path: data["patina.toml"]
+          pattern: "daily_budget = 150\n"
+      - notMatchRegex:
+          path: data["patina.toml"]
+          pattern: '150\.0'
+      - notExists:
+          path: data["overrides.toml"]
+  - it: rejects invalid TOML
+    set:
+      config: "timezone = "
+    asserts:
+      - failedTemplate:
+          errorPattern: config is not valid TOML
+  - it: rejects a listen key
+    set:
+      config: |
+        listen = "0.0.0.0:9"
+    asserts:
+      - failedTemplate:
+          errorPattern: listen
+  - it: rejects a database_url key
+    set:
+      config: |
+        database_url = "sqlite://x"
+    asserts:
+      - failedTemplate:
+          errorPattern: database_url
+  - it: rejects overrides without overrides_path
+    set:
+      config: |
+        timezone = "UTC"
+      overrides: |
+        [[override]]
+        number = "5.6"
+        ignore = true
+    asserts:
+      - failedTemplate:
+          errorPattern: overrides_path
+  - it: renders overrides.toml when overrides_path is set
+    set:
+      config: |
+        [[sources]]
+        kind = "hdhomerun"
+        url = "http://192.168.1.50"
+        lineups = ["home"]
+        overrides_path = "/etc/patina/overrides.toml"
+      overrides: |
+        [[override]]
+        number = "5.6"
+        ignore = true
+    asserts:
+      - matchRegex:
+          path: data["overrides.toml"]
+          pattern: 'number = "5.6"'

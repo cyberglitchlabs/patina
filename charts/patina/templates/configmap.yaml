@@ -1,8 +1,14 @@
-# Stub so the schema tests have a target; replaced by the real ConfigMap.
+{{- include "patina.validateConfig" . -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ include "patina.fullname" . }}
   labels:
     {{- include "patina.labels" . | nindent 4 }}
-data: {}
+data:
+  patina.toml: |
+    {{- .Values.config | nindent 4 }}
+  {{- if .Values.overrides }}
+  overrides.toml: |
+    {{- .Values.overrides | nindent 4 }}
+  {{- end }}

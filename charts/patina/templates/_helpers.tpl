@@ -40,3 +40,30 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- define "patina.image" -}}
 {{- printf "%s:%s" .Values.image.repository (default .Chart.AppVersion .Values.image.tag) }}
 {{- end }}
+
+{{/* Validate .Values.config: it must parse as TOML, must not set keys the
+chart owns, and must name the overrides file when `overrides` is set. */}}
+{{- define "patina.validateConfig" -}}
+{{- /* Helm has no mustFromToml: fromToml returns {"Error": msg} on bad input. */ -}}
+{{- $cfg := fromToml .Values.config -}}
+{{- if hasKey $cfg "Error" }}
+{{- fail (printf "config is not valid TOML: %s" (get $cfg "Error")) }}
+{{- end }}
+{{- if hasKey $cfg "listen" }}
+{{- fail "config must not set listen: the chart owns it" }}
+{{- end }}
+{{- if hasKey $cfg "database_url" }}
+{{- fail "config must not set database_url: the chart owns it (use database.urlSecret for Postgres)" }}
+{{- end }}
+{{- if .Values.overrides }}
+{{- $found := false }}
+{{- range $s := (get $cfg "sources" | default list) }}
+{{- if and (kindIs "map" $s) (hasKey $s "overrides_path") }}
+{{- $found = true }}
+{{- end }}
+{{- end }}
+{{- if not $found }}
+{{- fail "overrides is set but config has no overrides_path under [[sources]]; set overrides_path = \"/etc/patina/overrides.toml\"" }}
+{{- end }}
+{{- end }}
+{{- end }}
