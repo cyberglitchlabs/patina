@@ -6,7 +6,18 @@
     "helpers:pinGitHubActionDigests",
     ":semanticCommits"
   ],
-  "enabledManagers": ["cargo", "dockerfile", "github-actions"],
+  "enabledManagers": ["cargo", "dockerfile", "github-actions", "custom.regex"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Tool versions pinned in scripts/chart-check.sh, each preceded by a '# renovate: datasource=... depName=...' comment.",
+      "managerFilePatterns": ["scripts/chart-check.sh"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>\\S+)\\n[A-Z_]+_VERSION=\"(?<currentValue>[^\"]+)\""
+      ],
+      "extractVersionTemplate": "^v?(?<version>.+)$"
+    }
+  ],
   "schedule": ["before 6am on monday"],
   "timezone": "America/Chicago",
   "automerge": false,
@@ -35,6 +46,11 @@
       "description": "Base image bumps (rust build image, distroless runtime image) in one PR.",
       "matchManagers": ["dockerfile"],
       "groupName": "container base images"
+    },
+    {
+      "description": "One PR for the Helm chart tool pins in scripts/chart-check.sh.",
+      "matchManagers": ["custom.regex"],
+      "groupName": "chart tools"
     }
   ]
 }

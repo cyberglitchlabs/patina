@@ -1,0 +1,310 @@
+suite: deployment
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+  - templates/secret.yaml
+tests:
+  - it: runs one Recreate replica with the grace period and selector matching pod labels
+    template: templates/deployment.yaml
+    asserts:
+      - isKind:
+          of: Deployment
+      - equal:
+          path: spec.replicas
+          value: 1
+      - equal:
+          path: spec.strategy.type
+          value: Recreate
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 90
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/name"]
+          value: patina
+      - equal:
+          path: spec.template.metadata.labels["app.kubernetes.io/name"]
+          value: patina
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/instance"]
+          value: RELEASE-NAME
+      - equal:
+          path: spec.template.metadata.labels["app.kubernetes.io/instance"]
+          value: RELEASE-NAME
+      - notExists:
+          path: metadata.namespace
+  - it: sets the pod and container security contexts
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+      - equal:
+          path: spec.template.spec.containers[0].securityContext
+          value:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+  - it: pins the three probes
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].startupProbe
+          value:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe
+          value:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe
+          value:
+            exec:
+              command: ["/usr/local/bin/patina", "healthcheck"]
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+  - it: uses the image from appVersion and the example resources
+    template: templates/deployment.yaml
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: '^ghcr\.io/cyberglitchlabs/patina:[0-9]+\.[0-9]+\.[0-9]+$'
+      - equal:
+          path: spec.template.spec.containers[0].resources
+          value:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+      - equal:
+          path: spec.template.spec.containers[0].ports[0]
+          value:
+            name: http
+            containerPort: 8080
+  - it: merges values over the default resources
+    template: templates/deployment.yaml
+    set:
+      resources:
+        limits:
+          memory: 512Mi
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources
+          value:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 512Mi
+  - it: removes resources with null
+    template: templates/deployment.yaml
+    set:
+      resources: null
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources
+          value: {}
+  - it: reads tokens from the generated secret and points at the config file
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].envFrom
+          value:
+            - secretRef:
+                name: RELEASE-NAME-patina
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: PATINA_CONFIG
+            value: /etc/patina/patina.toml
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          any: true
+          content:
+            name: PATINA_DATABASE_URL
+  - it: reads tokens from existingSecret
+    template: templates/deployment.yaml
+    set:
+      existingSecret: mine
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].envFrom[0].secretRef.name
+          value: mine
+  - it: mounts data and the whole config map read-only, backed by a PVC
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts
+          value:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /etc/patina
+              readOnly: true
+      - equal:
+          path: spec.template.spec.volumes
+          value:
+            - name: data
+              persistentVolumeClaim:
+                claimName: RELEASE-NAME-patina
+            - name: config
+              configMap:
+                name: RELEASE-NAME-patina
+  - it: does not restrict config map items so overrides.toml appears in /etc/patina
+    template: templates/deployment.yaml
+    set:
+      config: "[[sources]]\nkind = \"hdhomerun\"\nurl = \"http://192.168.1.50\"\noverrides_path = \"/etc/patina/overrides.toml\"\n"
+      overrides: "x = 1\n"
+    asserts:
+      - notExists:
+          path: spec.template.spec.volumes[1].configMap.items
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[1].mountPath
+          value: /etc/patina
+  - it: projects overrides.toml in the config map when overrides is set
+    template: templates/configmap.yaml
+    set:
+      config: "[[sources]]\nkind = \"hdhomerun\"\nurl = \"http://192.168.1.50\"\noverrides_path = \"/etc/patina/overrides.toml\"\n"
+      overrides: "x = 1\n"
+    asserts:
+      - exists:
+          path: data["overrides.toml"]
+  - it: adds config and secret checksums when the chart makes the secret
+    template: templates/deployment.yaml
+    asserts:
+      - matchRegex:
+          path: spec.template.metadata.annotations["checksum/config"]
+          pattern: '^[0-9a-f]{64}$'
+      - matchRegex:
+          path: spec.template.metadata.annotations["checksum/secret"]
+          pattern: '^[0-9a-f]{64}$'
+  - it: omits the secret checksum with existingSecret
+    template: templates/deployment.yaml
+    set:
+      existingSecret: mine
+    asserts:
+      - matchRegex:
+          path: spec.template.metadata.annotations["checksum/config"]
+          pattern: '^[0-9a-f]{64}$'
+      - notExists:
+          path: spec.template.metadata.annotations["checksum/secret"]
+  # The pinned values hash the rendered ConfigMap, whose labels carry the chart
+  # version: after a Chart.yaml version bump, update them from the failure output.
+  - it: pins the config checksum for config A
+    template: templates/deployment.yaml
+    set:
+      config: "timezone = \"America/Chicago\"\n"
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations["checksum/config"]
+          value: 925fbefcb1bc5ec7ed714f897049359c522af19345345cfd8bc9661b33713121
+  - it: pins a different config checksum for config B
+    template: templates/deployment.yaml
+    set:
+      config: "timezone = \"UTC\"\n"
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations["checksum/config"]
+          value: 44d9a5fad30defc0ad29f943e40641a5e96f77fe3eebbe4943585e4d6cfe3d29
+  - it: merges podAnnotations, nodeSelector, tolerations, affinity and extraEnv
+    template: templates/deployment.yaml
+    set:
+      podAnnotations:
+        foo: bar
+      nodeSelector:
+        disk: ssd
+      tolerations:
+        - key: k
+          operator: Exists
+      affinity:
+        nodeAffinity: {}
+      extraEnv:
+        - name: RUST_LOG
+          value: debug
+    asserts:
+      - equal:
+          path: spec.template.metadata.annotations.foo
+          value: bar
+      - equal:
+          path: spec.template.spec.nodeSelector.disk
+          value: ssd
+      - equal:
+          path: spec.template.spec.tolerations[0].key
+          value: k
+      - exists:
+          path: spec.template.spec.affinity.nodeAffinity
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: RUST_LOG
+            value: debug
+  - it: uses the existing claim
+    template: templates/deployment.yaml
+    set:
+      persistence:
+        existingClaim: mine
+    asserts:
+      - equal:
+          path: spec.template.spec.volumes[0]
+          value:
+            name: data
+            persistentVolumeClaim:
+              claimName: mine
+  - it: uses an emptyDir for /data when persistence is disabled
+    template: templates/deployment.yaml
+    set:
+      persistence:
+        enabled: false
+    asserts:
+      - equal:
+          path: spec.template.spec.volumes[0]
+          value:
+            name: data
+            emptyDir: {}
+  - it: wires Postgres from a secret key with an emptyDir /data
+    template: templates/deployment.yaml
+    set:
+      database:
+        urlSecret:
+          name: db
+          key: URL
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: PATINA_DATABASE_URL
+            valueFrom:
+              secretKeyRef:
+                name: db
+                key: URL
+      - equal:
+          path: spec.template.spec.volumes[0]
+          value:
+            name: data
+            emptyDir: {}
+  - it: fails when Postgres and an existing claim are both set
+    template: templates/deployment.yaml
+    set:
+      database:
+        urlSecret:
+          name: db
+      persistence:
+        existingClaim: mine
+    asserts:
+      - failedTemplate:
+          errorPattern: 'database\.urlSecret\.name.*persistence\.existingClaim'

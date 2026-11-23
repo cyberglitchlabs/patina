@@ -3,3 +3,7 @@
 *.db-shm
 *.db-wal
 .superpowers/
+trivy-*.sarif
+
+# Planning documents from agent workflows stay local.
+docs/superpowers/

@@ -1,0 +1,10 @@
+chart-dirs:
+  - charts
+target-branch: main
+check-version-increment: true
+# The maintainer in Chart.yaml is an organisation, not a GitHub user, so ct's
+# maintainer check (which looks up users) would fail.
+validate-maintainers: false
+# Run the helm-unittest suites as part of `ct lint`.
+additional-commands:
+  - helm unittest {{ .Path }}

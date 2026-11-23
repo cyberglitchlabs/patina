@@ -1,0 +1,198 @@
+name: Chart
+
+# Helm chart checks. Every job calls scripts/chart-check.sh (or ct), so what
+# runs here is what a contributor runs locally. Tool versions live in the
+# script; the "Read tool pins" step puts them in the job environment so CI
+# installs exactly what the script expects.
+#
+# The paths filter does not include the Dockerfile, src/ or Cargo files: a
+# workflow-level filter cannot be scoped to one job, and adding them would run
+# every chart job on each Rust change. The image itself is covered by the
+# docker-smoke job in ci.yml.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "charts/**"
+      - "scripts/chart-check.sh"
+      - "ct.yaml"
+      - ".github/workflows/chart.yml"
+  pull_request:
+    paths:
+      - "charts/**"
+      - "scripts/chart-check.sh"
+      - "ct.yaml"
+      - ".github/workflows/chart.yml"
+
+# New pushes to a PR cancel the older run for the same PR; runs on main are
+# never cancelled (each one has a unique ref+sha group so they all finish).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Least privilege: jobs only need to read the repository. The trivy job adds
+# security-events: write for itself.
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read tool pins
+        run: scripts/chart-check.sh pins >> "$GITHUB_ENV"
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v${{ env.HELM_VERSION }}
+      - run: scripts/chart-check.sh lint
+
+  unittest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read tool pins
+        run: scripts/chart-check.sh pins >> "$GITHUB_ENV"
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v${{ env.HELM_VERSION }}
+      - name: Install helm-unittest
+        # Installed by exact tag with --verify=false: the plugin ships no
+        # signature or checksum, so Helm 4 cannot verify it.
+        run: helm plugin install https://github.com/helm-unittest/helm-unittest --version "v${HELM_UNITTEST_VERSION}" --verify=false
+      - run: scripts/chart-check.sh unittest
+      # tokens needs only helm, so it shares this job.
+      - run: scripts/chart-check.sh tokens
+
+  kubeconform:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read tool pins
+        run: scripts/chart-check.sh pins >> "$GITHUB_ENV"
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v${{ env.HELM_VERSION }}
+      - name: Install kubeconform
+        # go install is verified by the Go checksum database. A go install
+        # build is not stamped by goreleaser, so stamp the version with
+        # ldflags; the script's version check reads it from `kubeconform -v`.
+        # Go comes from the runner's preinstalled toolchain.
+        run: |
+          GOBIN="$RUNNER_TEMP/bin" go install -ldflags "-X main.version=v${KUBECONFORM_VERSION}" "github.com/yannh/kubeconform/cmd/kubeconform@v${KUBECONFORM_VERSION}"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: scripts/chart-check.sh kubeconform
+
+  trivy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write # upload SARIF to code scanning
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read tool pins
+        run: scripts/chart-check.sh pins >> "$GITHUB_ENV"
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v${{ env.HELM_VERSION }}
+      - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v${{ env.TRIVY_VERSION }}
+      - name: Trivy config scan (fails on HIGH and CRITICAL)
+        env:
+          # Inside the workspace: hashFiles only sees files under it.
+          TRIVY_SARIF_FILE: trivy-chart.sarif
+        run: scripts/chart-check.sh trivy
+      # The script writes the SARIF even when the scan fails, so findings still
+      # reach code scanning. Pull requests from forks get a read-only token and cannot
+      # upload, so those are skipped (the scan above still gates them).
+      - name: Upload SARIF to code scanning
+        if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && hashFiles('trivy-chart.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          sarif_file: trivy-chart.sarif
+          category: chart-trivy
+
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read tool pins
+        run: scripts/chart-check.sh pins >> "$GITHUB_ENV"
+      - name: Install helm-docs
+        # go install is verified by the Go checksum database. Go comes from the
+        # runner's preinstalled toolchain. Only goreleaser builds stamp the
+        # version, so stamp it here; without it helm-docs has no --version flag.
+        run: |
+          GOBIN="$RUNNER_TEMP/bin" go install -ldflags "-X main.version=${HELM_DOCS_VERSION}" "github.com/norwoodj/helm-docs/cmd/helm-docs@v${HELM_DOCS_VERSION}"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: scripts/chart-check.sh docs
+
+  ct-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # ct compares against main for the version bump check
+          persist-credentials: false
+      - name: Read tool pins
+        run: scripts/chart-check.sh pins >> "$GITHUB_ENV"
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v${{ env.HELM_VERSION }}
+      - name: Install helm-unittest
+        run: helm plugin install https://github.com/helm-unittest/helm-unittest --version "v${HELM_UNITTEST_VERSION}" --verify=false
+      - uses: helm/chart-testing-action@720270857a28afd41e2426521a7801db09e9b510 # v2.9.0
+        with:
+          version: v${{ env.CT_VERSION }}
+      # On push to main ct finds no changed charts and passes trivially, so the
+      # pull request run is the real gate.
+      # ct.yaml sets check-version-increment (a chart change needs a Chart.yaml
+      # version bump) and runs helm unittest as an additional command.
+      - run: ct lint --config ct.yaml
+
+  # Builds the image from this checkout, loads it into kind and installs the
+  # bootable scenarios (see INSTALL_SCENARIOS in the script for which ones and
+  # why), then checks that helm upgrade keeps the generated tokens.
+  install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read tool pins
+        run: scripts/chart-check.sh pins >> "$GITHUB_ENV"
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v${{ env.HELM_VERSION }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: false
+          load: true # into the runner's docker, for kind load
+          tags: patina:ci
+          cache-from: type=gha,scope=chart-install
+          cache-to: type=gha,mode=max,scope=chart-install
+      - uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
+        with:
+          version: v${{ env.KIND_VERSION }}
+          cluster_name: chart-testing
+      - run: scripts/chart-check.sh install

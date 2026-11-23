@@ -1,0 +1,25 @@
+{{- if .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "patina.fullname" . }}
+  labels:
+    {{- /* User labels win over chart labels, so no key appears twice. */}}
+    {{- mergeOverwrite (include "patina.labels" . | fromYaml) .Values.serviceMonitor.labels | toYaml | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "patina.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      {{- with .Values.serviceMonitor.interval }}
+      interval: {{ . | quote }}
+      {{- end }}
+      # /metrics needs the admin token as a bearer token.
+      authorization:
+        type: Bearer
+        credentials:
+          name: {{ include "patina.secretName" . }}
+          key: PATINA_ADMIN_TOKEN
+{{- end }}

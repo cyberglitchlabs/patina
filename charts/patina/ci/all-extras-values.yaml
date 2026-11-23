@@ -1,0 +1,47 @@
+# Every optional extra on, with an existing claim.
+config: |
+  timezone = "America/Chicago"
+
+  [[providers]]
+  kind = "gracenote"
+  name = "gracenote"
+  daily_budget = 150
+
+  [[providers.lineups]]
+  name = "home"
+  lineup_id = "USA-OTA55401"
+  postal_code = "55401"
+  country = "USA"
+
+  [[sources]]
+  kind = "hdhomerun"
+  url = "http://192.168.1.50"
+  lineups = ["home"]
+
+persistence:
+  existingClaim: patina-data
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: patina.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: patina-tls
+      hosts:
+        - patina.example.com
+
+serviceMonitor:
+  enabled: true
+  labels:
+    release: prometheus
+
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: jellyfin

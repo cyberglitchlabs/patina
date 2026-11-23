@@ -1,0 +1,134 @@
+{{- if and .Values.database.urlSecret.name .Values.persistence.existingClaim }}
+{{- fail "database.urlSecret.name and persistence.existingClaim are both set: Postgres keeps no data on a volume, so set only one of them" }}
+{{- end }}
+{{- $postgres := ne (.Values.database.urlSecret.name | default "") "" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "patina.fullname" . }}
+  labels:
+    {{- include "patina.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate # the SQLite volume is ReadWriteOnce: stop the old pod first
+  selector:
+    matchLabels:
+      {{- include "patina.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # A config change restarts the pod.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if not .Values.existingSecret }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "patina.labels" . | nindent 8 }}
+    spec:
+      # After SIGTERM Patina finishes the guide window it is merging, which can
+      # take up to a 60 s provider request timeout plus the merge itself. A
+      # shorter grace period risks a SIGKILL.
+      terminationGracePeriodSeconds: 90
+      # The container runs as the non-root user 65532 with a read-only root
+      # filesystem; /data is the only writable path. fsGroup makes the volume
+      # writable for that user.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: patina
+          image: {{ include "patina.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # There is deliberately no /tmp emptyDir and no workingDir override:
+          # SQLite falls back to the working directory (/data) for temporary
+          # files, which is the writable volume.
+          env:
+            - name: PATINA_CONFIG
+              value: /etc/patina/patina.toml
+            {{- if $postgres }}
+            - name: PATINA_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.urlSecret.name }}
+                  key: {{ .Values.database.urlSecret.key }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ include "patina.secretName" . }}
+          ports:
+            - name: http
+              containerPort: 8080
+          # The image has no shell or curl. Plain HTTP probes on /healthz work.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          # The binary's own check also works as an exec probe (this is what
+          # the Docker HEALTHCHECK runs).
+          livenessProbe:
+            exec:
+              command: ["/usr/local/bin/patina", "healthcheck"]
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml (.Values.resources | default dict) | nindent 12 }}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            # The whole ConfigMap, so overrides.toml appears beside patina.toml.
+            - name: config
+              mountPath: /etc/patina
+              readOnly: true
+      volumes:
+        - name: data
+          {{- if $postgres }}
+          # SQLite scratch files still need a writable /data.
+          emptyDir: {}
+          {{- else if .Values.persistence.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim }}
+          {{- else if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "patina.fullname" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: config
+          configMap:
+            name: {{ include "patina.fullname" . }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

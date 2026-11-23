@@ -57,7 +57,7 @@ the setting (exit status 1).
 - The annotated, complete file is [`config.example.toml`](../config.example.toml).
 - The README has the [settings table](../README.md#configuration) and the list
   of endpoints.
-- A Kubernetes example is in [`docs/examples/kubernetes.yaml`](examples/kubernetes.yaml).
+- On Kubernetes, use the Helm chart in [`charts/patina`](../charts/patina/README.md) (not published yet; install from a checkout).
 
 Environment variables, with defaults and what an **empty** value does:
 
