@@ -3,3 +3,6 @@ chart-dirs:
 target-branch: main
 check-version-increment: true
 validate-maintainers: false
+# Run the helm-unittest suites as part of `ct lint`.
+additional-commands:
+  - helm unittest {{ .Path }}
