@@ -44,9 +44,11 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{/* Validate .Values.config: it must parse as TOML, must not set keys the
 chart owns, and must name the overrides file when `overrides` is set. */}}
 {{- define "patina.validateConfig" -}}
-{{- /* Helm has no mustFromToml: fromToml returns {"Error": msg} on bad input. */ -}}
+{{- /* Helm has no mustFromToml: fromToml returns {"Error": msg} on bad input.
+Only a sole string-valued Error key counts as failure; a config that is exactly
+`Error = "x"` is a residual collision we accept. */ -}}
 {{- $cfg := fromToml .Values.config -}}
-{{- if hasKey $cfg "Error" }}
+{{- if and (eq (len $cfg) 1) (kindIs "string" (get $cfg "Error")) (hasKey $cfg "Error") }}
 {{- fail (printf "config is not valid TOML: %s" (get $cfg "Error")) }}
 {{- end }}
 {{- if hasKey $cfg "listen" }}
@@ -58,12 +60,12 @@ chart owns, and must name the overrides file when `overrides` is set. */}}
 {{- if .Values.overrides }}
 {{- $found := false }}
 {{- range $s := (get $cfg "sources" | default list) }}
-{{- if and (kindIs "map" $s) (hasKey $s "overrides_path") }}
+{{- if and (kindIs "map" $s) (eq (get $s "overrides_path" | default "") "/etc/patina/overrides.toml") }}
 {{- $found = true }}
 {{- end }}
 {{- end }}
 {{- if not $found }}
-{{- fail "overrides is set but config has no overrides_path under [[sources]]; set overrides_path = \"/etc/patina/overrides.toml\"" }}
+{{- fail "overrides is set but config has no [[sources]] entry with overrides_path = \"/etc/patina/overrides.toml\"; set overrides_path = \"/etc/patina/overrides.toml\"" }}
 {{- end }}
 {{- end }}
 {{- end }}

@@ -27,14 +27,14 @@ tests:
         listen = "0.0.0.0:9"
     asserts:
       - failedTemplate:
-          errorPattern: listen
+          errorPattern: config must not set listen
   - it: rejects a database_url key
     set:
       config: |
         database_url = "sqlite://x"
     asserts:
       - failedTemplate:
-          errorPattern: database_url
+          errorPattern: config must not set database_url
   - it: rejects overrides without overrides_path
     set:
       config: |
@@ -62,3 +62,42 @@ tests:
       - matchRegex:
           path: data["overrides.toml"]
           pattern: 'number = "5.6"'
+  - it: rejects a wrong overrides_path
+    set:
+      config: |
+        [[sources]]
+        overrides_path = "/wrong/path.toml"
+      overrides: |
+        [[override]]
+        number = "5.6"
+        ignore = true
+    asserts:
+      - failedTemplate:
+          errorPattern: /etc/patina/overrides.toml
+  - it: accepts the overrides path on a later source
+    set:
+      config: |
+        [[sources]]
+        kind = "hdhomerun"
+        url = "http://192.168.1.50"
+
+        [[sources]]
+        kind = "hdhomerun"
+        url = "http://192.168.1.51"
+        overrides_path = "/etc/patina/overrides.toml"
+      overrides: |
+        [[override]]
+        number = "5.6"
+        ignore = true
+    asserts:
+      - exists:
+          path: data["overrides.toml"]
+  - it: does not mistake a user Error key for a parse failure
+    set:
+      config: |
+        Error = "mine"
+        timezone = "UTC"
+    asserts:
+      - matchRegex:
+          path: data["patina.toml"]
+          pattern: 'Error = "mine"'
